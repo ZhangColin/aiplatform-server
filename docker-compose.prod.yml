@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    container_name: aiplatform-server
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+    networks:
+      - webnet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  webnet:
+    external: true

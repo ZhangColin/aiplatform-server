@@ -1,0 +1,11 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/aieducenter
+    username: aiedu
+    password: dev123
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+spring.jpa.show-sql: true
