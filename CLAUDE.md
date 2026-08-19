@@ -23,6 +23,16 @@ Gateway 网关服务，基于 cartisan-boot 框架。
 - 打包：`mvn package -DskipTests`
 - 变异测试：`mvn org.pitest:pitest-maven:mutationCoverage`
 
-## 开发流程
+## Agent skills
 
-严格按 Superpowers 技能流程执行：brainstorming → writing-plans → TDD → verification
+### Issue tracker
+
+Issue 通过 GitHub Issues 管理（`gh` CLI）。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用默认五角色标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+Single-context 布局：仓库根目录 `CONTEXT.md` + `docs/adr/`（由 `/domain-modeling` 惰性创建）。见 `docs/agents/domain.md`。
