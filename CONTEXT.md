@@ -16,6 +16,10 @@ _Avoid_: 包装（旧称）、应用层
 **限界上下文（Bounded Context）**：
 一个有自己领域模型与语言的完整业务/能力域。分区不是 BC——base/business 是架构标签，BC 是区内每个包（workspace / agentengine / eventhub / knowledge / process / project / …）。
 
+**平台通知（Platform Notification）**：
+平台状态变化（工作区创建、阶段推进、预览就绪、销毁）的对外广播；只作实时呈现的信号，状态以查询为准。
+_Avoid_: agent 流事件、应用事件
+
 ## base 区
 
 **环境（Environment）**：
@@ -29,6 +33,14 @@ _Avoid_: 包装（旧称）、应用层
 
 **开发智能体适配层（Coding Agent Adapter）**：
 抹平各引擎差异的薄 adapter：runTask / pendingQuestions / replyQuestions / replyPermission / health。systemPrompt 与 modelId 是入参——适配层不含角色概念。
+
+**运行（Run）**：
+一次任务下发的智能体执行过程，runId 为其标识（任务端点生成、随响应返回）。一次运行产出连串 agent 流事件。
+_Avoid_: 会话（那是跨运行的持久寻址）
+
+**agent 流事件（Agent Stream Event）**：
+智能体运行过程的增量事件（文本、思考、工具调用、代码补丁）——与 LLM 交互过程流的细化，一次运行一连串。
+_Avoid_: 平台通知（那是状态变化广播，两类不混）
 
 **中间件资源（Middleware Resource）**：
 项目环境挂载的数据库 / Redis / 对象存储，随环境生命周期供给与隔离（attachResource）。

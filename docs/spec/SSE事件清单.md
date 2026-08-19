@@ -1,0 +1,61 @@
+# SSE 事件清单（正本）
+
+> 平台 SSE 事件的名册与信封正本，[ADR-0001](../adr/0001-swagger-contract-and-sse-channels.md) 定稿。前端消费以本文 + swagger 端点描述为准。
+> 事件只让 UI「活」，不承担正确性：断线丢失可接受，状态以 REST 查询为准。
+>
+> **治理**：新增顶层 type 必须先进本清单再上线（code review 检查）；代码侧只允许引用各 BC 的 `XxxEventTypes` 常量类，禁止字符串字面量散落。
+
+## 信封（两通道统一）
+
+```
+event: event
+id: {streamId}:{seq}          # 通知通道 streamId=projectId；agent 流通道 streamId=runId
+data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
+```
+
+- SSE name 恒为 `event`，前端每通道一个 listener。
+- `payload` 恒为对象，必带关联字段；**payload 内禁用 `type` 键名**。
+- 心跳：每 15s 发注释行 `:ping`（不进 listener，仅保活）。
+- 订阅：`GET /api/events?projectId=xxx` / `GET /api/agent-events?projectId=xxx`；缺省 = 全量。过滤参数与 payload 关联字段同名。
+
+## 通道一：平台通知（`GET /api/events`）
+
+平台状态变化的广播；编排层在副作用真实落定后发射；**永不补发**，重连后 REST 重查。
+
+| type | payload 字段 | 示例 |
+|---|---|---|
+| `workspace-created` | `projectId` `projectName` `container` `projectType` `engine` | `{"projectId":"a1b2c3d4","projectName":"官网 demo","container":"aiplatform-dev-a1b2c3d4","projectType":"WEBSITE","engine":"opencode"}` |
+| `stage-changed` | `projectId` `stage` `stageLabel` `approved?` `rejected?` | `{"projectId":"a1b2c3d4","stage":"DEV","stageLabel":"开发","approved":true}` |
+| `preview-ready` | `projectId` `url` | `{"projectId":"a1b2c3d4","url":"http://localhost:30080"}` |
+| `workspace-destroyed` | `projectId` | `{"projectId":"a1b2c3d4"}` |
+
+## 通道二：agent 流（`GET /api/agent-events`）
+
+一次智能体运行的增量过程流（LLM 交互过程流的细化）；payload 必带 `projectId` + `runId`，`sessionId` 会话建立后携带。
+
+两类事件：
+
+- **平台事件**（封闭集合，注册制）：字段扁平，下表为准；
+- **引擎透传事件**（开放集合）：`data` 字段内为引擎 part 原样（如 opencode `part.type` 直传），下表列已知名型。
+
+| type | 类别 | payload 字段 | 说明 |
+|---|---|---|---|
+| `task-start` | 平台 | `projectId` `runId` `prompt` `model` `engine?` | 运行开始（runId 随任务响应同值返回） |
+| `role-assigned` | 平台 | `projectId` `runId` `role` `roleLabel` `stage` `engine` | 角色卡分配 |
+| `knowledge-retrieved` | 平台 | `projectId` `runId` `count` | 沉淀助手注入 |
+| `session-created` | 平台 | `projectId` `runId` `sessionId` `engine?` | 会话建立 |
+| `error` | 平台 | `projectId` `runId` `message` | 运行失败 |
+| `task-finish` | 平台 | `projectId` `runId` `sessionId` `finish` | 运行结束 |
+| `questions-answered` | 平台 | `projectId` `runId` `requestId` | HITL 答复送达 |
+| `permission-replied` | 平台 | `projectId` `runId` `permissionId` `approve` | 权限答复送达 |
+| `text` | 引擎透传 | … + `data` | 最终文本 |
+| `reasoning` | 引擎透传 | … + `data` | 思考增量 |
+| `patch` | 引擎透传 | … + `data`（`path` `diff` `edits`） | 代码补丁 |
+| `tool` | 引擎透传 | … + `data` | 工具调用 |
+| `step-start` / `step-finish` | 引擎透传 | … + `data` | 步骤边界 |
+
+> 字段表为初版，随片 2 / 片 5 spec 细化；信封与名册的任何变更即改本文。
+
+## 前端通用模块（约定）
+
+门户布局级挂通知通道实例（常开），任务进度页挂 agent 流实例（看运行才挂）；模块统一管连接建立、心跳透明、自动重连、重连后 REST 重查钩子、按 type 分发回调——页面只声明关心的 type，不重复写连接逻辑。
