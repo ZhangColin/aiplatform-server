@@ -1,9 +1,11 @@
 # aiplatform-server
 
-Gateway 网关服务，基于 cartisan-boot 框架。
+AI 开发平台后端（Phase A）：`base` 底座（环境/智能体适配/事件/知识/流程引擎）+ `business` 业务层双分区，单 module，基于 cartisan-boot 框架。领域词汇以 [CONTEXT.md](CONTEXT.md) 为正本。
 
 ## 核心文档
 
+- [CONTEXT.md](CONTEXT.md) — 领域词汇表（写代码/文档/讨论的统一语言）
+- [B0 · 底座重写切片蓝图](docs/spec/B0-底座切片蓝图.md) — 包结构定稿、六片切片与验收口径
 - [cartisan-boot 使用手册](docs/guide/cartisan-boot-使用手册.md) — 框架能力清单、API 文档和使用示例
 - [限界上下文代码编写规范](docs/guide/限界上下文代码编写规范.md) — DDD 六边形架构落地指南
 
