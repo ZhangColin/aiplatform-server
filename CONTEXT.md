@@ -20,6 +20,10 @@ _Avoid_: 包装（旧称）、应用层
 平台状态变化（工作区创建、阶段推进、预览就绪、销毁）的对外广播；只作实时呈现的信号，状态以查询为准。
 _Avoid_: agent 流事件、应用事件
 
+**应用事件（Application Event）**：
+应用层经发布者端口发出的跨限界上下文 / 跨应用协作事件（cartisan ApplicationEvent：进程内分发起步，跨服务换消息发布器；事务提交后送达）。
+_Avoid_: 领域事件（聚合内事件，已废弃不用）、agent 流事件、平台通知
+
 ## base 区
 
 **环境（Environment）**：
@@ -33,6 +37,10 @@ _Avoid_: agent 流事件、应用事件
 
 **开发智能体适配层（Coding Agent Adapter）**：
 抹平各引擎差异的薄 adapter：runTask / pendingQuestions / replyQuestions / replyPermission / health。systemPrompt 与 modelId 是入参——适配层不含角色概念。
+
+**等待点（Wait Point）**：
+智能体运行中挂起等人反馈的底座实体：waitId 稳定标识，kind = 问答 / 权限；生命周期 pending → settled / expired / cancelled，落库跨重启存活。业务层以 waitId 引用（转任务、回填续跑）；中性寻址，不含项目概念。
+_Avoid_: HITL 等待点（业务侧交互概念，等待点是其底座承载）、决策门
 
 **运行（Run）**：
 一次任务下发的智能体执行过程，runId 为其标识（任务端点生成、随响应返回）。一次运行产出连串 agent 流事件。
@@ -53,6 +61,9 @@ _Avoid_: 平台通知（那是状态变化广播，两类不混）
 
 **沉淀助手**：
 RAG 检索注入机制——agent 阶段开始时检索历史知识拼入上下文（当前实现 = 后端检索注入）。
+
+**计量上下文（Metering Context）**：
+用量采集与聚合查询的能力域（base.metering）：UsageEvent 协议（token 五档 input/output/cache_read/cache_write/reasoning，只记 token 不记钱）+ 按 subject 聚合查询。平台内起步，独立计量服务是演化方向（换上报 / 查询适配器）。
 
 **阶段（Stage）**：
 阶段推进引擎（base.process）的步骤单元；序列由业务侧模板配置（阶段列表 + 每阶段角色 + 产物），引擎只管推进 / 驳回停留 / 门禁计数，不知业务内容。
@@ -97,5 +108,5 @@ _Avoid_: 开发智能体（那是走适配层的 coding agent）
 - **分区规则**：`base` 不得 import `business`（ArchUnit 守护）；业务层只经端口调底座。
 - **门与 HITL 不统一建模**：决策门 = 流程层关口（business，映射 base.process）；HITL 等待点 = 智能体层挂起（base.agentengine 通道）。两层分离、UI 统一呈现为「待我处理」（Code-Canvas 双表实践佐证）。
 - **框架托管策略**：代码类智能体 → coding agent（OpenCode/DSH 经适配层）；业务类智能体 → AgentScope 类框架（MVP 不引入，preset 先行）；两类经 MCP/A2A 互通。
-- **计量独立服务**：token 计量是独立薄服务；底座只做埋点上报（UsageEvent），不记钱；支付亦独立服务，业务层只对接。
+- **计量上下文平台内起步**：base.metering 承担采集 / 存储 / 聚合 / 查询（UsageEvent，只记 token 不记钱）；独立计量服务是演化方向（换上报 / 查询适配器），单价 / 加价在业务层；支付独立服务，业务层只对接。
 - **MVP 不引入**：AgentScope、强隔离 microVM（成规模才上）、腾讯云向量库（>100 万向量才迁）。

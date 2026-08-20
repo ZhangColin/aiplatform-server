@@ -46,8 +46,8 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 | `session-created` | 平台 | `projectId` `runId` `sessionId` `engine?` | 会话建立 |
 | `error` | 平台 | `projectId` `runId` `message` | 运行失败 |
 | `task-finish` | 平台 | `projectId` `runId` `sessionId` `finish` | 运行结束 |
-| `questions-answered` | 平台 | `projectId` `runId` `requestId` | HITL 答复送达 |
-| `permission-replied` | 平台 | `projectId` `runId` `permissionId` `approve` | 权限答复送达 |
+| `wait-raised` | 平台 | `projectId` `runId` `waitId` `kind` `summary` | 等待点出现（kind=QUESTION/PERMISSION；summary 为适配器提取的中性短文本）——[A1 票 #5](https://github.com/ZhangColin/aiplatform-server/issues/5) 新增 |
+| `wait-settled` | 平台 | `projectId` `runId` `waitId` `outcome` | 等待点关闭（outcome=answered/approved/denied/deferred）——替换原 `questions-answered` / `permission-replied` |
 | `text` | 引擎透传 | … + `data` | 最终文本 |
 | `reasoning` | 引擎透传 | … + `data` | 思考增量 |
 | `patch` | 引擎透传 | … + `data`（`path` `diff` `edits`） | 代码补丁 |
