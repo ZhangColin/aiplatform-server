@@ -43,7 +43,7 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 |---|---|---|---|
 | `task-start` | 平台 | `projectId` `runId` `prompt` `model` `engine?` | 运行开始（runId 随任务响应同值返回） |
 | `role-assigned` | 平台 | `projectId` `runId` `role` `roleLabel` `stage` `engine` | 角色卡分配 |
-| `knowledge-retrieved` | 平台 | `projectId` `runId` `count` | 沉淀助手注入 |
+| `knowledge-retrieved` | 平台 | `projectId` `runId` `items` | 沉淀助手注入；items = `[{kind, projectName, title, snippet?}]`（kind/projectName = 来源项目，命中可见）——[A5 票 #11](https://github.com/ZhangColin/aiplatform-server/issues/11) 扩展 |
 | `session-created` | 平台 | `projectId` `runId` `sessionId` `engine?` | 会话建立 |
 | `error` | 平台 | `projectId` `runId` `message` | 运行失败 |
 | `task-finish` | 平台 | `projectId` `runId` `sessionId` `finish` | 运行结束 |
