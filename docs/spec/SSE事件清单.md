@@ -28,6 +28,7 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 | `stage-changed` | `projectId` `stage` `stageLabel` `approved?` `rejected?` `reason?` | `{"projectId":"a1b2c3d4","stage":"DEV","stageLabel":"开发","approved":true}`（`reason` 驳回时携带，[A3 票 #9](https://github.com/ZhangColin/aiplatform-server/issues/9)） |
 | `preview-ready` | `projectId` `url` | `{"projectId":"a1b2c3d4","url":"http://localhost:30080"}` |
 | `workspace-destroyed` | `projectId` | `{"projectId":"a1b2c3d4"}` |
+| `task-updated` | `projectId` `taskId` `status` | `{"projectId":"a1b2c3d4","taskId":"t1","status":"SUBMITTED"}`（任务状态每次迁移；[A4 票 #10](https://github.com/ZhangColin/aiplatform-server/issues/10) 新增） |
 
 ## 通道二：agent 流（`GET /api/agent-events`）
 
