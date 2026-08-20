@@ -25,7 +25,7 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 | type | payload 字段 | 示例 |
 |---|---|---|
 | `workspace-created` | `projectId` `projectName` `container` `projectType` `engine` | `{"projectId":"a1b2c3d4","projectName":"官网 demo","container":"aiplatform-dev-a1b2c3d4","projectType":"WEBSITE","engine":"opencode"}` |
-| `stage-changed` | `projectId` `stage` `stageLabel` `approved?` `rejected?` | `{"projectId":"a1b2c3d4","stage":"DEV","stageLabel":"开发","approved":true}` |
+| `stage-changed` | `projectId` `stage` `stageLabel` `approved?` `rejected?` `reason?` | `{"projectId":"a1b2c3d4","stage":"DEV","stageLabel":"开发","approved":true}`（`reason` 驳回时携带，[A3 票 #9](https://github.com/ZhangColin/aiplatform-server/issues/9)） |
 | `preview-ready` | `projectId` `url` | `{"projectId":"a1b2c3d4","url":"http://localhost:30080"}` |
 | `workspace-destroyed` | `projectId` | `{"projectId":"a1b2c3d4"}` |
 
