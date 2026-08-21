@@ -15,7 +15,13 @@
  *
  * <h3>包结构</h3>
  * <ul>
- *   <li>四层骨架（domain / application / infrastructure / endpoints）随 A1/A6 切片落位</li>
+ *   <li>domain - 领域层：UsageEvent 协议与 TokenUsage 五档（三家归一化）、UsageSummary
+ *       读模型、UsageEventEntry 聚合（met_usage_events）、UsageEventSink / UsageQueryPort
+ *       端口（CLIENT 直调）、仓储 + 读侧聚合 fragment</li>
+ *   <li>application - 应用层：MeteringAppService（幂等上报 + bySubject 聚合）</li>
+ *   <li>infrastructure - 基础设施层：MeteringLocalAdapter（端口进程内适配，迁出换 REST）、
+ *       persistence（jsonb 维度聚合的原生 SQL fragment 实现）</li>
+ *   <li>endpoints - 无 REST 面：消费端点随片5c（usage 基础版）与 A6（cost 扩展）</li>
  * </ul>
  *
  * @since 0.1.0
