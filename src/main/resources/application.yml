@@ -37,6 +37,12 @@ cartisan:
       app-secret: ${OPENAPI_APP_SECRET:}
     apikey-service-url: https://openapi.aieducenter.com/api/v1/api-keys/by-appId
 
+# 片3 · base.knowledge：本机 fastembed embedding 服务（512 维），
+# 启动方式见 docs/guide/本机依赖启动.md（scripts/embedding_server.py）
+app:
+  embedding:
+    url: http://127.0.0.1:9091
+
 management:
   endpoints:
     web:

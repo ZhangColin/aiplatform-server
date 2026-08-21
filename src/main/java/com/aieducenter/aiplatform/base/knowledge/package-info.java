@@ -14,7 +14,12 @@
  *
  * <h3>包结构</h3>
  * <ul>
- *   <li>四层骨架（domain / application / infrastructure / endpoints）随片3 落位</li>
+ *   <li>domain - 领域层：模型（KnowledgeSpec/KnowledgeHit）、端口（KnowledgePort 北向入口
+ *       / EmbeddingClient 南向向量化）、ChunkStore 存取接口、KNW_ 错误</li>
+ *   <li>application - 应用层：KnowledgeAppService（入库幂等删后插 / 检索降级 / 级联清理）</li>
+ *   <li>infrastructure - 基础设施层：KnowledgeLocalAdapter（端口进程内适配）、
+ *       persistence/PgvectorChunkStore（JdbcTemplate + pgvector）、embedding/FastembedEmbeddingClient</li>
+ *   <li>endpoints - 北向接口：暂无（五类摄取挂钩与 search 端点归 A5 接线票 #28）</li>
  * </ul>
  *
  * @since 0.1.0
