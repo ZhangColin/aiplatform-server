@@ -30,6 +30,10 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.http.MediaType;
 
+import com.aieducenter.aiplatform.business.identity.domain.model.AuthCookies;
+import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSession;
+import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSessionStore;
+
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,6 +73,12 @@ class EventsControllerSseTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    /** /api/** 拦截面（A2）要求会话——窄上下文带上 identity 会话存储，测试自种一个 */
+    @Autowired
+    private BffSessionStore sessionStore;
+
+    private static final String TEST_SESSION_ID = "sse-test-session";
+
     private final List<SseClient> clients = CollUtil.newArrayList();
 
     @AfterEach
@@ -77,7 +87,10 @@ class EventsControllerSseTest {
     }
 
     private SseClient connect(String query) throws Exception {
-        SseClient client = SseClient.connect(port, query);
+        sessionStore.put(TEST_SESSION_ID, new BffSession(1L, "sse-test", "idt", "at", "rt",
+                Instant.now().plusSeconds(600)));
+        SseClient client = SseClient.connect(port, query,
+                AuthCookies.SESSION_COOKIE_NAME + "=" + TEST_SESSION_ID);
         clients.add(client);
         return client;
     }
@@ -190,11 +203,12 @@ class EventsControllerSseTest {
             this.readerThread.start();
         }
 
-        static SseClient connect(int port, String query) throws Exception {
+        static SseClient connect(int port, String query, String cookie) throws Exception {
             HttpClient httpClient = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create("http://localhost:" + port + "/api/events" + query))
                     .header("Accept", MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .header("Cookie", cookie)
                     .timeout(Duration.ofSeconds(5))
                     .GET()
                     .build();
@@ -260,14 +274,16 @@ class EventsControllerSseTest {
 
     /**
      * 窄上下文入口：只扫 eventhub 本包 + 共享 web/config（全局异常处理、SpringDoc
-     * 分组、swagger 重定向），不扫业务/其他 BC——本测试只验 SSE 通道，不依赖数据面。
+     * 分组、swagger 重定向、/api/** 鉴权拦截）+ identity 会话存储（A2 起 /api/events
+     * 在拦截面内，测试自种会话），不扫业务/其他 BC——本测试只验 SSE 通道，不依赖数据面。
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
     @ComponentScan(basePackages = {
             "com.aieducenter.aiplatform.config",
             "com.aieducenter.aiplatform.web",
-            "com.aieducenter.aiplatform.base.eventhub"})
+            "com.aieducenter.aiplatform.base.eventhub",
+            "com.aieducenter.aiplatform.business.identity.infrastructure.session"})
     static class NarrowApp {
     }
 }

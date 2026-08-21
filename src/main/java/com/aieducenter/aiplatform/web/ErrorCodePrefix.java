@@ -25,7 +25,7 @@ public enum ErrorCodePrefix {
     /** business.project：项目主链（prj_） */
     PRJ("PRJ_", "business.project"),
 
-    /** business.identity：账号认证（idn_，A2 落码） */
+    /** business.identity：账号认证（idn_） */
     IDN("IDN_", "business.identity"),
 
     /** business.task：任务系统（tsk_，A4 落码） */

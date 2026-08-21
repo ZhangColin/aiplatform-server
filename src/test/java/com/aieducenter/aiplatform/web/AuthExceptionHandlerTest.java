@@ -1,5 +1,7 @@
 package com.aieducenter.aiplatform.web;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
@@ -21,7 +23,7 @@ class AuthExceptionHandlerTest {
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.standaloneSetup(new ProbeController())
-                .setControllerAdvice(new AuthExceptionHandler())
+                .setControllerAdvice(new AuthExceptionHandler(new ObjectMapper()))
                 .build();
     }
 
@@ -53,5 +55,15 @@ class AuthExceptionHandlerTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.message").value("Access denied"));
+    }
+
+    @Test
+    void given_sse_accept_header_when_handle_then_401_not_500() throws Exception {
+        // SSE 端点无会话：Accept: text/event-stream 下协商渲染不出 JSON 会 500——
+        // 直接写响应保证 401 + 统一信封（A2 /api/events 拦截面）
+        mockMvc.perform(get("/test/auth/unauthorized").accept("text/event-stream"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.message").value("Authentication required"));
     }
 }

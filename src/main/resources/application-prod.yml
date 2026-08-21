@@ -10,3 +10,7 @@ spring:
 
 spring.jpa.show-sql: false
 logging.level.root: INFO
+
+# 生产 https：cookie 必须 Secure（A2 §2 表 8-②）；issuer/redirect-uri 随环境注册
+sso:
+  cookie-secure: true

@@ -3,6 +3,8 @@ package com.aieducenter.aiplatform.base.workspace.endpoints.controller;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import com.cartisan.core.context.RequestContext;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -13,6 +15,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
+
+import org.springframework.test.web.servlet.RequestBuilder;
+import org.springframework.test.web.servlet.ResultActions;
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.CreateWorkspaceCommand;
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.WorkspaceExecCommand;
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.ExecResultResponse;
@@ -50,6 +55,16 @@ class WorkspaceControllerTest {
     @MockitoBean
     private WorkspaceLifecycleAppService appService;
 
+    /**
+     * A2 起全 /api/** 拦截（切片经 WebMvcConfigurer 扫入拦截器）——MVC 契约测试
+     * 不走登录链，夹具直接注 RequestContext（A2 规格 §2 表 4 既有约定）。
+     */
+    private ResultActions performAsUser(RequestBuilder request) throws Exception {
+        return RequestContext.runFor(
+                new RequestContext(null, null, null, null, 1L, "workspace-test", null, null),
+                () -> mockMvc.perform(request));
+    }
+
     @Test
     void given_dev_workspace_when_create_then_wrapped_in_api_response() throws Exception {
         when(appService.create(any(CreateWorkspaceCommand.class)))
@@ -60,7 +75,7 @@ class WorkspaceControllerTest {
                                 "pg-100", 35432, "postgresql://pg")),
                         LocalDateTime.of(2026, 8, 21, 12, 0)));
 
-        mockMvc.perform(post("/api/workspaces")
+        performAsUser(post("/api/workspaces")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"kind\":1}"))
                 .andExpect(status().isOk())
@@ -78,7 +93,7 @@ class WorkspaceControllerTest {
         when(appService.get("100")).thenReturn(new WorkspaceResponse("100", EnvKind.DEV, "开发",
                 "ws-100-dev", "net-100", 20000, 20001, List.of(), null));
 
-        mockMvc.perform(get("/api/workspaces/100"))
+        performAsUser(get("/api/workspaces/100"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.workspaceId").value("100"))
                 .andExpect(jsonPath("$.data.networkName").value("net-100"));
@@ -89,7 +104,7 @@ class WorkspaceControllerTest {
         when(appService.get("404"))
                 .thenThrow(new ApplicationException(WorkspaceMessage.WORKSPACE_NOT_FOUND));
 
-        mockMvc.perform(get("/api/workspaces/404"))
+        performAsUser(get("/api/workspaces/404"))
                 .andExpect(status().isNotFound())
                 // 统一信封：code = HTTP 语义状态，message = 错误文案（WSP_001 前缀在 WorkspaceMessage 注册）
                 .andExpect(jsonPath("$.code").value(404))
@@ -101,7 +116,7 @@ class WorkspaceControllerTest {
         when(appService.exec(eq("100"), any(WorkspaceExecCommand.class)))
                 .thenReturn(new ExecResultResponse("hi", "", 0));
 
-        mockMvc.perform(post("/api/workspaces/100/exec")
+        performAsUser(post("/api/workspaces/100/exec")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"command\":\"echo hi\"}"))
                 .andExpect(status().isOk())
@@ -111,7 +126,7 @@ class WorkspaceControllerTest {
 
     @Test
     void given_blank_command_when_exec_then_rejected_as_400() throws Exception {
-        mockMvc.perform(post("/api/workspaces/100/exec")
+        performAsUser(post("/api/workspaces/100/exec")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"command\":\" \"}"))
                 .andExpect(status().isBadRequest());
@@ -119,7 +134,7 @@ class WorkspaceControllerTest {
 
     @Test
     void given_workspace_when_destroy_then_ok_without_data() throws Exception {
-        mockMvc.perform(delete("/api/workspaces/100"))
+        performAsUser(delete("/api/workspaces/100"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
     }

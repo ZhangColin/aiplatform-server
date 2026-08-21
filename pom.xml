@@ -95,6 +95,12 @@
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-crypto</artifactId>
         </dependency>
+        <!-- id_token JWKS RS256 验签（A2 §2 表 3：第一天就做，nimbus-jose-jwt；版本照 identity demo） -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>10.9.1</version>
+        </dependency>
 
         <!-- Utilities -->
         <dependency>

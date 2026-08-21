@@ -43,6 +43,20 @@ app:
   embedding:
     url: http://127.0.0.1:9091
 
+# A2 · business.identity：OIDC BFF 认证（sso.* 七项，照 identity demo SsoProperties）。
+# 凭据只落本地环境变量（.env.local，gitignored），不进 git——见 docs/guide/本机依赖启动.md。
+# 全程 localhost、禁混 127.0.0.1（cookie 按域隔离不带端口，A2 §2 表 8）。
+sso:
+  issuer: ${SSO_ISSUER:http://identity.localhost:10001}
+  client-id: ${SSO_CLIENT_ID:}
+  client-secret: ${SSO_CLIENT_SECRET:}
+  redirect-uri: ${SSO_REDIRECT_URI:http://localhost:3333/auth/callback}
+  scope: ${SSO_SCOPE:openid profile email}
+  app-base-url: ${SSO_APP_BASE_URL:http://localhost:3333}
+  # local 走 http://localhost：Safari/Firefox 不豁免 Secure-over-http，拒存 Secure cookie
+  # （A2 §2 表 8-②）；生产 https 必须 true（application-prod.yml 已翻）
+  cookie-secure: ${SSO_COOKIE_SECURE:false}
+
 management:
   endpoints:
     web:
