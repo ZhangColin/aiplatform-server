@@ -17,5 +17,7 @@ public interface IterationRepository extends BaseRepository<Iteration, Long> {
 
     List<Iteration> findByStatus(IterationStatus status);
 
+    List<Iteration> findByProjectId(Long projectId);
+
     void deleteByProjectId(Long projectId);
 }

@@ -19,6 +19,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppServi
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
+import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -66,6 +68,9 @@ class ProjectAgentTaskAppServiceTest {
 
     @MockitoBean
     private AgentStreamAppService streamAppService;
+
+    @MockitoBean
+    private PlatformNotificationAppService notificationAppService;
 
     @AfterEach
     void tearDown() {
@@ -190,6 +195,84 @@ class ProjectAgentTaskAppServiceTest {
 
         assertThat(response.accepted()).isFalse();
         assertThat(openIteration(project).getStageTaskCount()).isZero();
+    }
+
+    @Test
+    void given_dev_stage_first_test_task_when_dispatch_then_advance_to_test() {
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEV);
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-t1", "ses-t1", "opencode", true));
+
+        ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
+                new ProjectAgentTaskCommand("测试一下首页", RolePreset.TEST));
+
+        // 开发→测试唯一触发：首个测试任务被接受即 advance（A3 §2.3），计数落测试段
+        Iteration iteration = openIteration(project);
+        assertThat(iteration.getStage()).isEqualTo(ProjectMainChain.STAGE_TEST);
+        assertThat(iteration.getStageTaskCount()).isEqualTo(1);
+        assertThat(response.role()).isEqualTo("TEST");
+
+        // SSE stage-changed（编排触发：无 approved/rejected 标记）
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(notificationAppService).publish(eq(ProjectEventTypes.STAGE_CHANGED),
+                payload.capture());
+        assertThat(payload.getValue())
+                .containsEntry("projectId", project.getId().toString())
+                .containsEntry("stage", ProjectMainChain.STAGE_TEST)
+                .containsEntry("stageLabel", "测试")
+                .doesNotContainKey("approved")
+                .doesNotContainKey("rejected");
+    }
+
+    @Test
+    void given_test_stage_when_dispatch_test_task_then_no_advance() {
+        // 复测场景（A4 §5）：已在测试段，测试任务不重复推进
+        Project project = persistedProject("opencode");
+        Iteration iteration = persistedIteration(project, ProjectMainChain.STAGE_TEST);
+        iteration.recordStageTask();
+        iterationRepository.save(iteration);
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-t2", "ses-t2", "opencode", true));
+
+        appService.dispatchTask(project.getId(),
+                new ProjectAgentTaskCommand("复测首页", RolePreset.TEST));
+
+        assertThat(openIteration(project).getStage()).isEqualTo(ProjectMainChain.STAGE_TEST);
+        assertThat(openIteration(project).getStageTaskCount()).isEqualTo(2);
+        verify(notificationAppService, never()).publish(anyString(), any());
+    }
+
+    @Test
+    void given_dev_stage_dev_task_when_dispatch_then_no_advance() {
+        // 开发段上的开发/其他角色任务不触发推进——只有测试任务是触发器
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEV);
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-d1", "ses-d1", "opencode", true));
+
+        appService.dispatchTask(project.getId(),
+                new ProjectAgentTaskCommand("继续开发", RolePreset.DEV));
+
+        assertThat(openIteration(project).getStage()).isEqualTo(ProjectMainChain.STAGE_DEV);
+        assertThat(openIteration(project).getStageTaskCount()).isEqualTo(1);
+        verify(notificationAppService, never()).publish(anyString(), any());
+    }
+
+    @Test
+    void given_rejected_test_task_when_dispatch_then_no_advance() {
+        // 引擎拒绝 = 没有创建事实：不推进不计数
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEV);
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-t3", null, "opencode", false));
+
+        appService.dispatchTask(project.getId(),
+                new ProjectAgentTaskCommand("测试一下", RolePreset.TEST));
+
+        assertThat(openIteration(project).getStage()).isEqualTo(ProjectMainChain.STAGE_DEV);
+        assertThat(openIteration(project).getStageTaskCount()).isZero();
+        verify(notificationAppService, never()).publish(anyString(), any());
     }
 
     @Test

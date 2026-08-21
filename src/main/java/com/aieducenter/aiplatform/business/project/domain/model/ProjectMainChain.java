@@ -1,10 +1,14 @@
 package com.aieducenter.aiplatform.business.project.domain.model;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import com.aieducenter.aiplatform.base.process.domain.model.ExitGate;
 import com.aieducenter.aiplatform.base.process.domain.model.MainChainDefinition;
 import com.aieducenter.aiplatform.base.process.domain.model.StageEntry;
+
+import com.aieducenter.aiplatform.business.project.domain.enums.ConfirmationKind;
 
 /**
  * 平台主链定义（A3 §2.2，唯一一条——「模板」概念退役，过程演化 = 业务代码演化）：
@@ -62,6 +66,13 @@ public final class ProjectMainChain {
     private ProjectMainChain() {
     }
 
+    /** 有门阶段 → 确认种类（A3 §3 四扇门；与上面的出口门定义同处一文件，加门改一处）。 */
+    private static final Map<String, ConfirmationKind> GATE_KINDS = Map.of(
+            STAGE_BA, ConfirmationKind.REQUIREMENT,
+            STAGE_DEMO, ConfirmationKind.DEMO,
+            STAGE_TEST, ConfirmationKind.DEVELOPMENT,
+            STAGE_ACCEPTANCE, ConfirmationKind.ACCEPTANCE);
+
     /**
      * 主链定义（传入 base.process 的唯一实例；阶段推进引擎的推进/门禁语义归片5b 接线）。
      */
@@ -74,5 +85,13 @@ public final class ProjectMainChain {
      */
     public static String firstStage() {
         return DEFINITION.first().name();
+    }
+
+    /**
+     * 阶段出口门对应的确认种类（有门阶段与门一一对应；无门段/终态/空名返回空，
+     * 由调用方按「当前阶段无确认门」拒绝）。
+     */
+    public static Optional<ConfirmationKind> confirmationKindOf(String stage) {
+        return stage == null ? Optional.empty() : Optional.ofNullable(GATE_KINDS.get(stage));
     }
 }

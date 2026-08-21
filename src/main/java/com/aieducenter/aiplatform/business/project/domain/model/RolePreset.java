@@ -50,6 +50,11 @@ public enum RolePreset implements BaseEnum<RolePreset> {
     public static final String DEFAULT_KICKOFF_PROMPT =
             "请开始梳理本项目需求：向用户确认项目目标、范围与关键诉求，把结论沉淀为 /workspace/PRD.md。";
 
+    /** G1（需求确认）通过后自动 Demo run 的开场提示（A3 §2.3 前缀段自动）。 */
+    public static final String DEMO_KICKOFF_PROMPT =
+            "请阅读 /workspace/PRD.md（如存在），快速产出一个可体验、可预览的 Demo 原型"
+                    + "（默认 /workspace/index.html 静态页），让用户尽早确认方向。";
+
     private final Integer code;
     private final String name;
     private final String modelId;

@@ -1,8 +1,8 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.net.URI;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.springframework.data.domain.Sort;
@@ -22,6 +22,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.command.Creat
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
@@ -126,12 +127,11 @@ public class ProjectLifecycleAppService {
      * 项目列表（创建时间倒序；期位置/派生状态实时拼装）。
      */
     public List<ProjectResponse> list() {
-        Map<Long, Iteration> openIterations = iterationRepository
-                .findByStatus(IterationStatus.OPEN).stream()
-                .collect(Collectors.toMap(Iteration::getProjectId, Function.identity()));
+        Map<Long, List<Iteration>> iterationsByProject = iterationRepository.findAll().stream()
+                .collect(Collectors.groupingBy(Iteration::getProjectId));
         return projectRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
-                .map(project -> toResponse(project,
-                        openIterations.get(project.getId())))
+                .map(project -> toResponse(project, Iteration
+                        .currentOf(iterationsByProject.get(project.getId())).orElse(null)))
                 .toList();
     }
 
@@ -144,7 +144,7 @@ public class ProjectLifecycleAppService {
 
     /**
      * 删除项目（真删级联）：工作区物理销毁（容器/网络/卷，尽力而为）→ prj_* 行
-     * 级联删除（期随 FK 级联）→ SSE workspace-destroyed。
+     * 级联删除（期随 FK 级联、确认留痕随期级联）→ SSE workspace-destroyed。
      */
     public void delete(Long projectId) {
         Project project = requireProject(projectId);
@@ -155,6 +155,22 @@ public class ProjectLifecycleAppService {
         });
         notificationAppService.publish(ProjectEventTypes.WORKSPACE_DESTROYED, Map.of(
                 ProjectEventTypes.PROJECT_ID_FIELD, projectId.toString()));
+    }
+
+    /**
+     * 预览（B0 §6 步骤 4）：工作区端口真实暴露（docker publish，可访问 URL）→
+     * SSE {@code preview-ready}（A1 §4 口子④——底座 PreviewReady 应用事件照发，
+     * 业务呈现层补 projectId 后发射）→ 返回 URL。Demo 段产物可访问即预期效果，
+     * 未起服务时 URL 返回连接拒绝属真实状态。
+     */
+    public ProjectPreviewResponse preview(Long projectId) {
+        Project project = requireProject(projectId);
+        URI url = workspaceLifecycleAppService
+                .exposePreview(Long.toString(project.getWorkspaceId()));
+        notificationAppService.publish(ProjectEventTypes.PREVIEW_READY, Map.of(
+                ProjectEventTypes.PROJECT_ID_FIELD, projectId.toString(),
+                ProjectEventTypes.URL_FIELD, url.toString()));
+        return new ProjectPreviewResponse(url.toString());
     }
 
     // ---------- 内部 ----------
@@ -173,19 +189,20 @@ public class ProjectLifecycleAppService {
 
     private ProjectResponse detail(Long projectId) {
         Project project = requireProject(projectId);
-        Iteration openIteration = iterationRepository
-                .findByProjectIdAndStatus(projectId, IterationStatus.OPEN).orElse(null);
-        return toResponse(project, openIteration);
+        Iteration iteration = Iteration
+                .currentOf(iterationRepository.findByProjectId(projectId)).orElse(null);
+        return toResponse(project, iteration);
     }
 
-    /** 响应拼装：期位置（stage/标签）+ 派生项目状态（有无 OPEN 期，A3 §1）+ 计数。 */
-    private ProjectResponse toResponse(Project project, Iteration openIteration) {
-        String stage = openIteration != null ? openIteration.getStage() : null;
+    /** 响应拼装：期位置（stage/标签；收口后为 CLOSED）+ 派生项目状态（有无 OPEN
+     * 期，A3 §1/§5）+ 计数（收口后不展示——计数是门禁输入，过程已结束）。 */
+    private ProjectResponse toResponse(Project project, Iteration iteration) {
+        boolean open = iteration != null && iteration.getStatus() == IterationStatus.OPEN;
+        String stage = iteration != null ? iteration.getStage() : null;
         String stageLabel = stage != null
                 ? ProjectMainChain.definition().find(stage).map(entry -> entry.label())
                         .orElse(null)
                 : null;
-        boolean delivered = openIteration == null;
         return new ProjectResponse(
                 project.getId().toString(),
                 project.getName(),
@@ -195,23 +212,17 @@ public class ProjectLifecycleAppService {
                 project.getWorkspaceId().toString(),
                 stage,
                 stageLabel,
-                delivered ? ProjectResponse.STATUS_DELIVERED
-                        : ProjectResponse.STATUS_IN_PROGRESS,
-                delivered ? "已交付" : "开发中",
-                openIteration != null ? openIteration.getStageTaskCount() : null,
+                open ? ProjectResponse.STATUS_IN_PROGRESS : ProjectResponse.STATUS_DELIVERED,
+                open ? "开发中" : "已交付",
+                open ? iteration.getStageTaskCount() : null,
                 project.getArchivedAt() != null,
                 project.getCreatedAt());
     }
 
-    /** stage-changed 发射（建项目起始段 BA；推进/驳回归片5b 门操作）。 */
+    /** stage-changed 发射（建项目起始段 BA 的编排落位；门决策/DEV→TEST 见各自编排）。 */
     private void emitStageChanged(Long projectId, String stage) {
-        String stageLabel = ProjectMainChain.definition().find(stage)
-                .orElseThrow(() -> new ApplicationException(ProjectMessage.PROJECT_FIELDS_INCOMPLETE))
-                .label();
-        notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED, Map.of(
-                ProjectEventTypes.PROJECT_ID_FIELD, projectId.toString(),
-                ProjectEventTypes.STAGE_FIELD, stage,
-                ProjectEventTypes.STAGE_LABEL_FIELD, stageLabel));
+        notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED,
+                StageChangedPayload.plain(projectId, stage));
     }
 
     /** 工作区销毁（尽力而为）：失败记日志不阻断——真删级联优先，物理残留可重试销毁。 */

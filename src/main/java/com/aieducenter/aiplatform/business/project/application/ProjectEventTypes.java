@@ -10,8 +10,11 @@ public final class ProjectEventTypes {
     /** 工作区已建（容器 + 中间件就绪，建项目副作用落定后）。 */
     public static final String WORKSPACE_CREATED = "workspace-created";
 
-    /** 阶段推进/驳回停留（含建项目起始段 BA；驳回带 reason 归片5b）。 */
+    /** 阶段推进/驳回停留（含建项目起始段 BA 与编排触发的 DEV→TEST；驳回带 reason）。 */
     public static final String STAGE_CHANGED = "stage-changed";
+
+    /** 预览已就绪（端口真实暴露后，A1 §4 口子④的 SSE 呈现）。 */
+    public static final String PREVIEW_READY = "preview-ready";
 
     /** 工作区已销毁（删除级联清理落定后）。 */
     public static final String WORKSPACE_DESTROYED = "workspace-destroyed";
@@ -38,6 +41,18 @@ public final class ProjectEventTypes {
 
     /** 阶段展示标签。 */
     public static final String STAGE_LABEL_FIELD = "stageLabel";
+
+    /** 门通过标记（stage-changed，approve 时携带）。 */
+    public static final String APPROVED_FIELD = "approved";
+
+    /** 门驳回标记（stage-changed，reject 时携带）。 */
+    public static final String REJECTED_FIELD = "rejected";
+
+    /** 驳回理由（stage-changed，驳回时携带——前端展示理由）。 */
+    public static final String REASON_FIELD = "reason";
+
+    /** 预览 URL（preview-ready）。 */
+    public static final String URL_FIELD = "url";
 
     private ProjectEventTypes() {
     }

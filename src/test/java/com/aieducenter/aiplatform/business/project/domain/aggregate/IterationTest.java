@@ -47,4 +47,53 @@ class IterationTest {
                 .isInstanceOf(DomainException.class)
                 .hasMessageContaining(ProjectMessage.PROJECT_FIELDS_INCOMPLETE.message());
     }
+
+    @Test
+    void given_counted_stage_when_advance_to_then_stage_moves_and_count_resets() {
+        Iteration iteration = Iteration.open(1L, Iteration.FIRST_SEQ, ProjectMainChain.STAGE_BA);
+        iteration.recordStageTask();
+
+        iteration.advanceTo(ProjectMainChain.STAGE_DEMO);
+
+        // 下一阶段门禁从 0 起算（A3 §2.4 计数按阶段）
+        assertThat(iteration.getStage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
+        assertThat(iteration.getStageTaskCount()).isZero();
+        assertThat(iteration.getStatus()).isEqualTo(IterationStatus.OPEN);
+    }
+
+    @Test
+    void given_acceptance_passed_when_close_then_terminal_closed_with_timestamp() {
+        Iteration iteration = Iteration.open(1L, Iteration.FIRST_SEQ,
+                ProjectMainChain.STAGE_ACCEPTANCE);
+
+        iteration.close(ProjectMainChain.STAGE_CLOSED);
+
+        // 验收门通过即收口（A3 §2.2：无交付段——期 CLOSED，项目已交付是派生投影）
+        assertThat(iteration.getStage()).isEqualTo(ProjectMainChain.STAGE_CLOSED);
+        assertThat(iteration.getStatus()).isEqualTo(IterationStatus.CLOSED);
+        assertThat(iteration.getClosedAt()).isNotNull();
+
+        // 收口后无过程迁移，也不再计数（工具与过程正交）
+        assertThatThrownBy(() -> iteration.advanceTo(ProjectMainChain.STAGE_BA))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining(ProjectMessage.ITERATION_NOT_OPEN.message());
+        assertThatThrownBy(() -> iteration.close(ProjectMainChain.STAGE_CLOSED))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining(ProjectMessage.ITERATION_NOT_OPEN.message());
+        int countBefore = iteration.getStageTaskCount();
+        iteration.recordStageTask();
+        assertThat(iteration.getStageTaskCount()).isEqualTo(countBefore);
+    }
+
+    @Test
+    void given_open_iteration_when_advance_with_blank_stage_then_domain_error() {
+        Iteration iteration = Iteration.open(1L, Iteration.FIRST_SEQ, ProjectMainChain.STAGE_BA);
+
+        assertThatThrownBy(() -> iteration.advanceTo(" "))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_FIELDS_INCOMPLETE.message());
+        assertThatThrownBy(() -> iteration.close(null))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_FIELDS_INCOMPLETE.message());
+    }
 }

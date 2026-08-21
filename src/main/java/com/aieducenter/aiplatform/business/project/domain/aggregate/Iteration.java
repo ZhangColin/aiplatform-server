@@ -1,6 +1,9 @@
 package com.aieducenter.aiplatform.business.project.domain.aggregate;
 
 import java.time.LocalDateTime;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -83,6 +86,21 @@ public class Iteration extends Auditable implements AggregateRoot<Iteration, Lon
     }
 
     /**
+     * 项目的当前期（A3 §2.1/§5 的 v1 寻址规则，列表/详情共用一处）：OPEN 优先；
+     * 无 OPEN（已收口）回溯最新一期——期位置 stage=CLOSED 的展示来源；无期返回空。
+     */
+    public static Optional<Iteration> currentOf(List<Iteration> iterations) {
+        if (iterations == null || iterations.isEmpty()) {
+            return Optional.empty();
+        }
+        return iterations.stream()
+                .filter(iteration -> iteration.status == IterationStatus.OPEN)
+                .findFirst()
+                .or(() -> iterations.stream()
+                        .max(Comparator.comparingInt(Iteration::getSeq)));
+    }
+
+    /**
      * 记一次阶段任务（run 被引擎接受即计数——门禁输入，demo「没启动任务不能审批」
      * 语义）。期已收口不计数（工具与过程正交：期后任务照常跑，只是不再进过程计数）。
      */
@@ -91,6 +109,39 @@ public class Iteration extends Auditable implements AggregateRoot<Iteration, Lon
             return;
         }
         stageTaskCount++;
+    }
+
+    /**
+     * 门通过推进（引擎 advance 裁决后调用）：迁入下一阶段、计数归零（下一阶段
+     * 门禁从 0 起算）。期已收口即拒绝（收口后无过程迁移，A3 §2.2）。
+     */
+    public void advanceTo(String nextStage) {
+        requireOpen();
+        if (nextStage == null || nextStage.isBlank()) {
+            throw new DomainException(ProjectMessage.PROJECT_FIELDS_INCOMPLETE);
+        }
+        this.stage = nextStage;
+        this.stageTaskCount = 0;
+    }
+
+    /**
+     * 收口（验收门 G4 通过即联动，A3 §2.2 无交付段）：终态 + CLOSED + closedAt。
+     * 「项目已交付」= 无 OPEN 期的派生投影，不另落字段。
+     */
+    public void close(String terminalStage) {
+        requireOpen();
+        if (terminalStage == null || terminalStage.isBlank()) {
+            throw new DomainException(ProjectMessage.PROJECT_FIELDS_INCOMPLETE);
+        }
+        this.stage = terminalStage;
+        this.status = IterationStatus.CLOSED;
+        this.closedAt = LocalDateTime.now();
+    }
+
+    private void requireOpen() {
+        if (status != IterationStatus.OPEN) {
+            throw new DomainException(ProjectMessage.ITERATION_NOT_OPEN);
+        }
     }
 
     @PrePersist

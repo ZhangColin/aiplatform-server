@@ -1,5 +1,6 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.command.Creat
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
@@ -232,6 +234,40 @@ class ProjectLifecycleAppServiceTest {
         assertThatThrownBy(() -> appService.delete(-1L))
                 .isInstanceOf(ApplicationException.class)
                 .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
+    @Test
+    void given_project_when_preview_then_url_exposed_and_sse_preview_ready() throws Exception {
+        Long projectId = persistedProjectWithIteration("9300");
+        when(workspaceLifecycleAppService.exposePreview("9300"))
+                .thenReturn(new URI("http://localhost:30080"));
+
+        ProjectPreviewResponse response =
+                appService.preview(projectId);
+
+        // 端口真实暴露（docker publish 先行）→ 返回可访问 URL
+        assertThat(response.url()).isEqualTo("http://localhost:30080");
+        // SSE preview-ready（projectId + url，A1 §4 口子④的业务呈现）
+        verify(notificationAppService).publish(eq(ProjectEventTypes.PREVIEW_READY),
+                eq(Map.of("projectId", projectId.toString(), "url", "http://localhost:30080")));
+    }
+
+    @Test
+    void given_closed_iteration_when_get_then_stage_closed_and_delivered() {
+        Project project = projectRepository.save(Project
+                .create("已收口项目", ProjectType.WEBSITE, "opencode", 9302L, null));
+        Iteration iteration = iterationRepository.save(Iteration.open(project.getId(),
+                Iteration.FIRST_SEQ, ProjectMainChain.STAGE_ACCEPTANCE));
+        iteration.close(ProjectMainChain.STAGE_CLOSED);
+        iterationRepository.save(iteration);
+
+        ProjectResponse response = appService.get(project.getId());
+
+        // 收口后的期位置回溯（A3 §5）：stage=CLOSED，派生已交付
+        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_CLOSED);
+        assertThat(response.stageLabel()).isEqualTo("关闭");
+        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_DELIVERED);
+        assertThat(response.stageTaskCount()).isNull();
     }
 
     // ---------- 测试数据 ----------

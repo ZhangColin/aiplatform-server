@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import com.aieducenter.aiplatform.base.process.domain.model.MainChainDefinition;
 import com.aieducenter.aiplatform.base.process.domain.model.StageEntry;
 
+import com.aieducenter.aiplatform.business.project.domain.enums.ConfirmationKind;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -64,5 +66,26 @@ class ProjectMainChainTest {
                 .containsExactly("PRD.md");
         assertThat(chain.find(ProjectMainChain.STAGE_DEMO).orElseThrow().artifacts()).isNull();
         assertThat(chain.find(ProjectMainChain.STAGE_TEST).orElseThrow().artifacts()).isNull();
+    }
+
+    @Test
+    void given_gated_stages_when_confirmation_kind_then_matched_one_by_one() {
+        // A3 §3：四扇门与确认种类一一对应（测试段的门叫「开发完成确认」）
+        assertThat(ProjectMainChain.confirmationKindOf(ProjectMainChain.STAGE_BA))
+                .contains(ConfirmationKind.REQUIREMENT);
+        assertThat(ProjectMainChain.confirmationKindOf(ProjectMainChain.STAGE_DEMO))
+                .contains(ConfirmationKind.DEMO);
+        assertThat(ProjectMainChain.confirmationKindOf(ProjectMainChain.STAGE_TEST))
+                .contains(ConfirmationKind.DEVELOPMENT);
+        assertThat(ProjectMainChain.confirmationKindOf(ProjectMainChain.STAGE_ACCEPTANCE))
+                .contains(ConfirmationKind.ACCEPTANCE);
+    }
+
+    @Test
+    void given_gate_less_or_terminal_stage_when_confirmation_kind_then_empty() {
+        // 开发段无门（推进归编排触发）、终态无门（收口后再无确认）
+        assertThat(ProjectMainChain.confirmationKindOf(ProjectMainChain.STAGE_DEV)).isEmpty();
+        assertThat(ProjectMainChain.confirmationKindOf(ProjectMainChain.STAGE_CLOSED)).isEmpty();
+        assertThat(ProjectMainChain.confirmationKindOf(null)).isEmpty();
     }
 }

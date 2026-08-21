@@ -15,6 +15,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.command.Agent
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
+import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
@@ -39,6 +40,9 @@ import lombok.extern.slf4j.Slf4j;
  * {@code role-assigned} 由本层在 run 下发前发射（帧序 role-assigned →
  * task-start → session-created → …）。引擎交互不进业务事务（秒到分钟级），
  * 阶段计数是单行落库（仓储自带事务）。</p>
+ *
+ * <p>开发→测试推进（A3 §2.3 唯一触发）：首个测试任务（显式 TEST 角色且期在
+ * 开发段）被引擎接受即 advance + stage-changed（无门段，非人拍板）。</p>
  */
 @Service
 @Slf4j
@@ -48,17 +52,20 @@ public class ProjectAgentTaskAppService {
     private final IterationRepository iterationRepository;
     private final AgentTaskAppService agentTaskAppService;
     private final AgentStreamAppService streamAppService;
+    private final PlatformNotificationAppService notificationAppService;
     private final TransactionTemplate transactionTemplate;
 
     public ProjectAgentTaskAppService(ProjectRepository projectRepository,
                                       IterationRepository iterationRepository,
                                       AgentTaskAppService agentTaskAppService,
                                       AgentStreamAppService streamAppService,
+                                      PlatformNotificationAppService notificationAppService,
                                       TransactionTemplate transactionTemplate) {
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
         this.agentTaskAppService = agentTaskAppService;
         this.streamAppService = streamAppService;
+        this.notificationAppService = notificationAppService;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -88,11 +95,24 @@ public class ProjectAgentTaskAppService {
                         Map.of(AgentStreamAppService.PROJECT_FIELD, Long.toString(projectId))));
 
         if (result.accepted() && openIteration != null) {
+            // A3 §2.3 开发→测试的唯一触发：创建首个测试任务（期在开发段 + TEST 角色）
+            // → advance；已在测试段（复测）或期收口不动（A4 §5 守卫同口径，#26 的
+            // 任务端点经本端口复用此编排）。接受才触发——被拒的 run 没有创建事实。
+            boolean firstTestTask = ProjectMainChain.STAGE_DEV.equals(openIteration.getStage())
+                    && role == RolePreset.TEST;
             transactionTemplate.executeWithoutResult(status -> {
+                if (firstTestTask) {
+                    openIteration.advanceTo(ProjectMainChain.STAGE_TEST);
+                }
                 openIteration.recordStageTask();
                 iterationRepository.save(openIteration);
             });
+            if (firstTestTask) {
+                notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED,
+                        StageChangedPayload.plain(projectId, ProjectMainChain.STAGE_TEST));
+            }
         }
+        // stage 为下发时快照（首个测试任务的任务本身发起于开发段，计数已落测试段）
         return new ProjectAgentTaskResponse(result.runId(), result.sessionId(),
                 result.engine(), role.name(), role.getName(), stage, result.accepted());
     }

@@ -17,7 +17,17 @@ public enum ProjectMessage implements CodeMessage {
 
     PROJECT_NAME_BLANK(400, "PRJ_005", "项目名不能为空白"),
 
-    PROJECT_FIELDS_INCOMPLETE(400, "PRJ_006", "项目字段不完整");
+    PROJECT_FIELDS_INCOMPLETE(400, "PRJ_006", "项目字段不完整"),
+
+    GATE_TASKS_INSUFFICIENT(409, "PRJ_007", "门禁不足：本阶段完成任务数未达门限"),
+
+    GATE_OPEN_BUGS(409, "PRJ_008", "开发完成确认未通过：项目存在未关闭 Bug"),
+
+    STAGE_NO_GATE(409, "PRJ_009", "当前阶段无确认门（无门段的推进由编排触发，不是人拍板）"),
+
+    ITERATION_NOT_OPEN(409, "PRJ_010", "项目无进行中的期（主链已收口或未初始化）"),
+
+    REJECT_REASON_REQUIRED(400, "PRJ_011", "驳回理由必填");
 
     private final int httpStatus;
     private final String code;

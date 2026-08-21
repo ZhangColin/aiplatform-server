@@ -18,15 +18,19 @@ import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.web.exception.GlobalExceptionHandler;
 
+import com.aieducenter.aiplatform.business.project.application.ProjectGateAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectLifecycleAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -49,6 +53,9 @@ class ProjectControllerTest {
 
     @MockitoBean
     private ProjectLifecycleAppService appService;
+
+    @MockitoBean
+    private ProjectGateAppService gateAppService;
 
     /** A2 起全 /api/** 拦截——MVC 契约测试不走登录链，夹具直接注 RequestContext。 */
     private ResultActions performAsUser(RequestBuilder request) throws Exception {
@@ -123,6 +130,64 @@ class ProjectControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
         verify(appService).delete(100L);
+    }
+
+    @Test
+    void given_gate_ready_when_approve_then_advanced_project_returned() throws Exception {
+        when(gateAppService.approve(100L)).thenReturn(new ProjectResponse("100", "官网 demo",
+                ProjectType.WEBSITE, "官网", "opencode", "900", "DEMO", "Demo",
+                ProjectResponse.STATUS_IN_PROGRESS, "开发中", 0, false,
+                LocalDateTime.of(2026, 8, 22, 11, 0)));
+
+        performAsUser(post("/api/projects/100/stage/approve"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stage").value("DEMO"))
+                .andExpect(jsonPath("$.data.stageTaskCount").value(0));
+        verify(gateAppService).approve(100L);
+    }
+
+    @Test
+    void given_gate_blocked_when_approve_then_mapped_to_409() throws Exception {
+        when(gateAppService.approve(100L)).thenThrow(
+                new ApplicationException(ProjectMessage.GATE_TASKS_INSUFFICIENT));
+
+        performAsUser(post("/api/projects/100/stage/approve"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(409))
+                .andExpect(jsonPath("$.message").value("门禁不足：本阶段完成任务数未达门限"));
+    }
+
+    @Test
+    void given_reason_when_reject_then_passed_through() throws Exception {
+        when(gateAppService.reject(eq(100L), argThat("布局不对"::equals)))
+                .thenReturn(new ProjectResponse("100", "官网 demo", ProjectType.WEBSITE,
+                        "官网", "opencode", "900", "BA", "需求梳理",
+                        ProjectResponse.STATUS_IN_PROGRESS, "开发中", 1, false, null));
+
+        performAsUser(post("/api/projects/100/stage/reject")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"布局不对\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stage").value("BA"));
+    }
+
+    @Test
+    void given_blank_reason_when_reject_then_rejected_as_400() throws Exception {
+        performAsUser(post("/api/projects/100/stage/reject")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\" \"}"))
+                .andExpect(status().isBadRequest());
+        verify(gateAppService, never()).reject(any(), any());
+    }
+
+    @Test
+    void given_project_when_preview_then_url_returned() throws Exception {
+        when(appService.preview(100L)).thenReturn(new ProjectPreviewResponse(
+                "http://localhost:30080"));
+
+        performAsUser(get("/api/projects/100/preview"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.url").value("http://localhost:30080"));
     }
 
     /**
