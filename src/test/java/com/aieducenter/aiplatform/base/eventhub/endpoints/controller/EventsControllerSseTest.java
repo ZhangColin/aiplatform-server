@@ -22,9 +22,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.ComponentScan;
 import org.springframework.http.MediaType;
 
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
@@ -35,9 +38,12 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 /**
  * 通知通道真实验收（issue #14）：真实 HTTP/SSE 线格式——心跳注释行、统一信封
  * {type,payload,ts}、id {projectId}:{seq}、?projectId= 过滤、fire-and-forget、
- * swagger 端点描述嵌名册指引。窄上下文（排除数据面 autoconfig）不依赖本机 PG。
+ * swagger 端点描述嵌名册指引。窄上下文（{@link NarrowApp} 只扫 eventhub + 共享
+ * web/config，排除数据面 autoconfig）不依赖本机 PG——业务 BC 落码（如依赖 JPA
+ * 仓储的 workspace）不被本上下文牵连，springdoc 取分组文档也不会触达其 controller。
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
+@SpringBootTest(classes = EventsControllerSseTest.NarrowApp.class,
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.autoconfigure.exclude="
                 + "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,"
                 + "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration,"
@@ -250,5 +256,18 @@ class EventsControllerSseTest {
             }
             httpClient.close();
         }
+    }
+
+    /**
+     * 窄上下文入口：只扫 eventhub 本包 + 共享 web/config（全局异常处理、SpringDoc
+     * 分组、swagger 重定向），不扫业务/其他 BC——本测试只验 SSE 通道，不依赖数据面。
+     */
+    @SpringBootConfiguration
+    @EnableAutoConfiguration
+    @ComponentScan(basePackages = {
+            "com.aieducenter.aiplatform.config",
+            "com.aieducenter.aiplatform.web",
+            "com.aieducenter.aiplatform.base.eventhub"})
+    static class NarrowApp {
     }
 }
