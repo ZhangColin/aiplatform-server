@@ -28,6 +28,12 @@ public interface EnvironmentBackend {
     int DEV_PREVIEW_CONTAINER_PORT = 8081;
 
     /**
+     * dev 容器内引擎接入点（opencode serve）监听的容器端口（镜像与后端约定的单一
+     * 事实；片2 agentengine 消费——宿主映射 hostPort 在工作区句柄上）。
+     */
+    int DEV_ENGINE_CONTAINER_PORT = 4096;
+
+    /**
      * 创建工作区并落定全部真实副作用（容器/网络/中间件/.env），返回句柄与资源清单。
      * 幂等倾向：对同名残留先清理再建。
      */

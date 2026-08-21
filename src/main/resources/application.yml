@@ -42,6 +42,13 @@ cartisan:
 app:
   embedding:
     url: http://127.0.0.1:9091
+  # 片2a · base.agentengine：模型默认值（A1 §2.3 AgentModelConfig，任务入参缺省时兜底）
+  # 与任务超时；API Key 不在此（只经环境注入引擎进程，见 AgentApiKeyResolver）。
+  agent:
+    model:
+      provider: deepseek
+      id: deepseek-v4-pro
+    timeout-minutes: 30
 
 # A2 · business.identity：OIDC BFF 认证（sso.* 七项，照 identity demo SsoProperties）。
 # 凭据只落本地环境变量（.env.local，gitignored），不进 git——见 docs/guide/本机依赖启动.md。

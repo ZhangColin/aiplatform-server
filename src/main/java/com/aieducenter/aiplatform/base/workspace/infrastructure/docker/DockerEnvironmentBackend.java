@@ -51,8 +51,6 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
     private static final String PG_IMAGE = "pgvector/pgvector:pg16";
     private static final String REDIS_IMAGE = "redis:7";
 
-    /** dev 容器内引擎接入点监听端口（opencode serve，片2 消费；本片只占位映射）。 */
-    private static final int ENGINE_CONTAINER_PORT = 4096;
     private static final int PORT_MIN = 20000;
     private static final int PORT_MAX = 45000;
     private static final int PORT_ATTEMPTS = 10;
@@ -178,8 +176,8 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
                 continue;
             }
             ExecResult r = runCapture("docker", "run", "-d", "--name", containerName,
-                    "-p", hostPort + ":" + ENGINE_CONTAINER_PORT,
-                    "-p", previewPort + ":" + DEV_PREVIEW_CONTAINER_PORT,
+                    "-p", hostPort + ":" + EnvironmentBackend.DEV_ENGINE_CONTAINER_PORT,
+                    "-p", previewPort + ":" + EnvironmentBackend.DEV_PREVIEW_CONTAINER_PORT,
                     "-v", volumeOf(containerName) + ":/workspace",
                     "-w", "/workspace",
                     DEV_IMAGE, "sleep", "infinity");

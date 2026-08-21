@@ -1,0 +1,48 @@
+package com.aieducenter.aiplatform.base.agentengine.application;
+
+import java.util.List;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentSessionResponse;
+import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
+import com.aieducenter.aiplatform.base.agentengine.domain.repository.AgentSessionRepository;
+import com.aieducenter.aiplatform.base.agentengine.infrastructure.WorkspaceHandleClient;
+
+/**
+ * agent 会话查询用例（片2a）：按 workspaceId 寻址、跨重启存活的验证面
+ * （{@code agt_agent_sessions} 落库，服务重启后照常可查——B0 蓝图片2 验收）。
+ */
+@Service
+public class AgentSessionAppService {
+
+    private final AgentSessionRepository sessionRepository;
+    private final WorkspaceHandleClient workspaceHandleClient;
+
+    public AgentSessionAppService(AgentSessionRepository sessionRepository,
+                                  WorkspaceHandleClient workspaceHandleClient) {
+        this.sessionRepository = sessionRepository;
+        this.workspaceHandleClient = workspaceHandleClient;
+    }
+
+    /**
+     * 工作区全部会话（新起在前）。工作区不存在由 workspace 侧抛 WSP_001（404）。
+     */
+    @Transactional(readOnly = true)
+    public List<AgentSessionResponse> listByWorkspace(String workspaceId) {
+        long id = workspaceHandleClient.handleOf(workspaceId).workspaceId().id();
+        return sessionRepository.findByWorkspaceIdOrderByCreatedAtDesc(id).stream()
+                .map(AgentSessionAppService::toResponse)
+                .toList();
+    }
+
+    private static AgentSessionResponse toResponse(AgentSession session) {
+        return new AgentSessionResponse(
+                session.getSessionId(),
+                Long.toString(session.getWorkspaceId()),
+                session.getEngine(),
+                session.getLastRunId(),
+                session.getCreatedAt());
+    }
+}

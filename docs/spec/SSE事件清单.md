@@ -16,7 +16,7 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 - SSE name 恒为 `event`，前端每通道一个 listener。
 - `payload` 恒为对象，必带关联字段；**payload 内禁用 `type` 键名**。
 - 心跳：每 15s 发注释行 `:ping`（不进 listener，仅保活）。
-- 订阅：`GET /api/events?projectId=xxx` / `GET /api/agent-events?projectId=xxx`；缺省 = 全量。过滤参数与 payload 关联字段同名。
+- 订阅：`GET /api/events?projectId=xxx` / `GET /api/agent-events?projectId=xxx&runId=xxx`；缺省 = 全量。过滤参数与 payload 关联字段同名，多参数 AND。
 
 ## 通道一：平台通知（`GET /api/events`）
 
@@ -32,11 +32,13 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 
 ## 通道二：agent 流（`GET /api/agent-events`）
 
-一次智能体运行的增量过程流（LLM 交互过程流的细化）；payload 必带 `projectId` + `runId`，`sessionId` 会话建立后携带。
+一次智能体运行的增量过程流（LLM 交互过程流的细化）；payload 必带 `runId`，`sessionId` 会话建立后携带。`projectId` 由业务编排桥接（片5）注入；**片2a 底座任务端点（`POST /api/workspaces/{id}/agent/tasks`）直发的事件以 `workspaceId` 关联**（底座零业务概念，无 projectId）。订阅过滤：`?runId=`（任务进度页「看某个运行才挂」的常规姿势）/ `?workspaceId=`（片2a 底座直发）/ `?projectId=`（片5 起），可叠用（AND）。
+
+下表「payload 字段」列的关联字段 = `runId`（必带）+ `projectId`（片5 业务桥接注入；片2a 底座直发为 `workspaceId`，事件流**结束时整批到达**——同步 message 的已知限制，逐 part 增量是升级路径）。
 
 两类事件：
 
-- **平台事件**（封闭集合，注册制）：字段扁平，下表为准；
+- **平台事件**（封闭集合，注册制）：字段扁平，下表为准；代码侧引用 `AgentEventTypes` 常量（base.agentengine）；
 - **引擎透传事件**（开放集合）：`data` 字段内为引擎 part 原样（如 opencode `part.type` 直传），下表列已知名型。
 
 | type | 类别 | payload 字段 | 说明 |

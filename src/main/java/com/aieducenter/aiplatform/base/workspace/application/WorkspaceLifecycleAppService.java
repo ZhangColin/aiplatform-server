@@ -19,6 +19,7 @@ import com.aieducenter.aiplatform.base.workspace.application.mapper.WorkspaceMap
 import com.aieducenter.aiplatform.base.workspace.domain.aggregate.Workspace;
 import com.aieducenter.aiplatform.base.workspace.domain.error.WorkspaceMessage;
 import com.aieducenter.aiplatform.base.workspace.domain.model.ExecResult;
+import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceId;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceProvision;
 import com.aieducenter.aiplatform.base.workspace.domain.port.EnvironmentBackend;
@@ -83,6 +84,15 @@ public class WorkspaceLifecycleAppService {
      */
     public WorkspaceResponse get(String workspaceId) {
         return workspaceMapper.convert(requireWorkspace(workspaceId));
+    }
+
+    /**
+     * 取工作区运行时句柄（环境能力面的操作锚点；片2 agentengine 等底座消费方的
+     * 跨上下文出口——{@link WorkspaceHandle} 是 base 内部值对象，非对外 REST 契约）。
+     * 不存在即 WSP_001（404）。
+     */
+    public WorkspaceHandle handleOf(String workspaceId) {
+        return requireWorkspace(workspaceId).toHandle();
     }
 
     /**

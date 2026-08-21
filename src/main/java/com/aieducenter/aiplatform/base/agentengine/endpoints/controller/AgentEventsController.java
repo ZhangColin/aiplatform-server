@@ -1,0 +1,68 @@
+package com.aieducenter.aiplatform.base.agentengine.endpoints.controller;
+
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.http.MediaType;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
+
+/**
+ * agent 流 SSE 通道（通道二，ADR-0001）：{@code GET /api/agent-events}。
+ *
+ * <p>SSE 是呈现通道不是 REST——不套 ApiResponse，返回 {@link SseEmitter}；
+ * 事件契约以名册正本（docs/spec/SSE事件清单.md）+ 本端点描述为准。</p>
+ */
+@RestController
+@Validated
+@RequestMapping("/api/agent-events")
+@Tag(name = "事件中心 SSE", description = "SSE 呈现通道（非 REST，不套 ApiResponse）；事件名册正本见 docs/spec/SSE事件清单.md")
+public class AgentEventsController {
+
+    private final AgentStreamAppService appService;
+
+    public AgentEventsController(AgentStreamAppService appService) {
+        this.appService = appService;
+    }
+
+    /**
+     * 订阅 agent 运行过程事件流。
+     */
+    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "订阅 agent 流事件流（SSE）", description = """
+            一次智能体运行的增量过程流（通道二，任务进度页组件级消费——看某个运行才挂）。
+            Phase A 不补发，断线重连后前端对齐以 REST 重查兜底。
+
+            信封：SSE name 恒为 `event`；id = `{runId}:{seq}`；data = `{"type","payload","ts"}`
+            （payload 恒为对象、必带 runId、内禁 type 键名）。心跳：每 15s 发注释行 `:ping`。
+            订阅：`?projectId=` / `?runId=` / `?workspaceId=` 过滤（与 payload 关联字段同名，
+            可叠用 AND；缺省全量）；底座任务端点（POST /api/workspaces/{id}/agent/tasks）
+            直发的事件带 workspaceId，projectId 自片5 业务编排桥接注入。
+
+            名册（type → 说明，payload 除关联字段外）：
+
+            | type | 类别 | payload 字段 |
+            |---|---|---|
+            | task-start | 平台 | runId, prompt, model, engine |
+            | session-created | 平台 | runId, sessionId, engine |
+            | error | 平台 | runId, message |
+            | task-finish | 平台 | runId, sessionId, engine, finish |
+            | text / reasoning / patch / tool / step-start / step-finish | 引擎透传 | … + `data`（引擎 part 原样） |
+
+            名册正本与字段细则：docs/spec/SSE事件清单.md（新增顶层 type 先进清单再上线）。""")
+    public SseEmitter subscribe(
+            @Parameter(description = "按项目过滤（片5 业务桥接注入的字段；缺省不过滤）")
+            @RequestParam(required = false) String projectId,
+            @Parameter(description = "按运行过滤（任务进度页「看某个运行才挂」的常规姿势）")
+            @RequestParam(required = false) String runId,
+            @Parameter(description = "按工作区过滤（片2a 底座任务端点直发事件的关联字段）")
+            @RequestParam(required = false) String workspaceId) {
+        return appService.subscribe(projectId, runId, workspaceId);
+    }
+}
