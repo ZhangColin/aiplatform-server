@@ -25,8 +25,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 片0 基线契约验证（ADR-0001）：分页统一 1 基（OneIndexedParameters）+
  * 全端点统一响应体（ApiResponse / PageResponse）。
  * 走 MVC 切片读 application.yml，验证的是配置生效，不是框架自测。
+ * 切片只挂探针 controller（业务 controller 依赖各自 AppService，随其切片测）。
  */
-@WebMvcTest
+@WebMvcTest(controllers = WebBaselineTest.BaselineProbeController.class)
 @Import({WebBaselineTest.BaselineProbeController.class, WebMvcConfig.class})
 class WebBaselineTest {
 
