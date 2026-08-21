@@ -55,6 +55,30 @@ public final class AgentEventTypes {
      */
     public static final String WAIT_SETTLED = "wait-settled";
 
+    /**
+     * 角色卡分配（片5 编排层发射）：业务编排层选定角色卡后、run 下发前发射——
+     * 底座无角色概念（systemPrompt/modelId 是入参），常量入册供编排层引用。
+     */
+    public static final String ROLE_ASSIGNED = "role-assigned";
+
+    /** 角色卡标识（RolePreset 枚举名）。 */
+    public static final String ROLE_FIELD = "role";
+
+    /** 角色卡展示标签。 */
+    public static final String ROLE_LABEL_FIELD = "roleLabel";
+
+    /** 角色卡所处阶段（无 OPEN 期时为终态段名）。 */
+    public static final String ROLE_STAGE_FIELD = "stage";
+
+    /** 承接运行的引擎名（注册表键）。 */
+    public static final String ROLE_ENGINE_FIELD = "engine";
+
+    /** 等待点稳定标识（wait-raised 补发 / wait-settled payload 用）。 */
+    public static final String WAIT_ID_FIELD = "waitId";
+
+    /** 等待点关闭结果（answered / approved / denied / deferred）。 */
+    public static final String WAIT_OUTCOME_FIELD = "outcome";
+
     private AgentEventTypes() {
     }
 }

@@ -21,14 +21,19 @@ import com.cartisan.core.exception.ApplicationException;
 
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
+import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
+import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
 import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentTaskCommand;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.RunResult;
+import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
 import com.aieducenter.aiplatform.base.agentengine.domain.port.CodingAgentAdapter;
 import com.aieducenter.aiplatform.base.agentengine.domain.repository.AgentSessionRepository;
 import com.aieducenter.aiplatform.base.agentengine.infrastructure.WorkspaceHandleClient;
+import com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope;
 import com.aieducenter.aiplatform.base.eventhub.infrastructure.sse.RecordingSseSender;
 import com.aieducenter.aiplatform.base.eventhub.infrastructure.sse.SseChannelHub;
 import com.aieducenter.aiplatform.base.eventhub.infrastructure.sse.SseServerEvent;
@@ -234,8 +239,7 @@ class AgentTaskAppServiceTest {
                 .containsEntry("kind", "QUESTION");
         // 通道只见平台两帧（task-start/task-finish），无 wait-raised 半成品事件透传
         assertThat(sender.eventFramesOf(emitter)).extracting(
-                        frame -> ((com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope)
-                                frame.data()).type())
+                        frame -> ((EventEnvelope) frame.data()).type())
                 .containsExactly("task-start", "task-finish");
     }
 
@@ -251,6 +255,111 @@ class AgentTaskAppServiceTest {
         verify(waitAppService).expireRun(capturedRunId());
     }
 
+    // ---------- 片5 编排入口（AgentRunContext） ----------
+
+    @Test
+    void given_run_context_when_dispatch_then_business_run_id_and_usage_context_honored() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+
+        AgentTaskResponse response = appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", "你是 BA", "model-x", null, null),
+                new AgentRunContext("run-biz-1",
+                        new UsageContext("proj-9", Map.of("role", "BA")),
+                        Map.of("projectId", "proj-9")));
+
+        // 业务侧 runId / 计量归属被尊重（不覆盖、不兜底）
+        assertThat(response.runId()).isEqualTo("run-biz-1");
+        AgentTaskCommand sent = stubAdapter.received.get(0);
+        assertThat(sent.runId()).isEqualTo("run-biz-1");
+        assertThat(sent.usageContext().subject()).isEqualTo("proj-9");
+        assertThat(sent.usageContext().dims()).containsEntry("role", "BA");
+    }
+
+    @Test
+    void given_run_context_without_usage_when_dispatch_then_neutral_fallback() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
+                new AgentRunContext("run-biz-1", null, Map.of()));
+
+        // UsageContext 缺省 → subject=workspaceId 兜底；runId 仍用业务侧值
+        AgentTaskCommand sent = stubAdapter.received.get(0);
+        assertThat(sent.runId()).isEqualTo("run-biz-1");
+        assertThat(sent.usageContext().subject()).isEqualTo(Long.toString(WORKSPACE_ID));
+    }
+
+    @Test
+    void given_correlated_context_when_wait_raised_then_persisted_and_published_with_wait_id() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        stubAdapter.emitWaitRaised = true;
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+        when(waitAppService.raiseFromEvent(eq(WORKSPACE_ID), any())).thenReturn(
+                new WaitPointResponse("wait-1", Long.toString(WORKSPACE_ID), "ses_new",
+                        "run-biz-1", "que_1", WaitKind.QUESTION, WaitStatus.PENDING,
+                        "用哪个框架?", Map.of(), null, Instant.EPOCH, null));
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
+                new AgentRunContext("run-biz-1", new UsageContext("proj-9", Map.of()),
+                        Map.of("projectId", "proj-9")));
+
+        // 带关联字段的编排调用方：wait-raised 落库后补发（帧序 task-start → wait-raised → task-finish）
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("task-start", "wait-raised", "task-finish");
+        Map<String, Object> waitPayload = envelopePayload(sender.eventFramesOf(emitter).get(1));
+        assertThat(waitPayload).containsEntry("waitId", "wait-1")
+                .containsEntry("projectId", "proj-9")
+                .containsEntry("workspaceId", Long.toString(WORKSPACE_ID));
+    }
+
+    @Test
+    void given_uncorrelated_context_when_wait_raised_then_not_published() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        stubAdapter.emitWaitRaised = true;
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
+                new AgentRunContext("run-biz-1", null, Map.of()));
+
+        // 关联字段为空 = 中性调用方：wait-raised 落库不透传（底座端点行为不变）
+        verify(waitAppService).raiseFromEvent(eq(WORKSPACE_ID), any());
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("task-start", "task-finish");
+    }
+
+    @Test
+    void given_correlated_context_when_frames_published_then_all_carry_correlation() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
+                new AgentRunContext("run-biz-1", new UsageContext("proj-9", Map.of()),
+                        Map.of("projectId", "proj-9")));
+
+        // 每帧都注入关联字段（SSE事件清单·通道二：projectId 业务桥接注入）
+        assertThat(sender.eventFramesOf(emitter)).hasSize(2);
+        assertThat(sender.eventFramesOf(emitter)).allSatisfy(frame ->
+                assertThat(envelopePayload(frame)).containsEntry("projectId", "proj-9"));
+    }
+
+    @Test
+    void given_correlation_with_type_key_when_construct_context_then_rejected() {
+        // 信封契约：payload 顶层禁 type 键名——构造期 fail-fast
+        assertThatThrownBy(() -> new AgentRunContext("run-biz-1", null,
+                Map.of("type", "x")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     // ---------- 替身与工具 ----------
 
     /** 通道订阅代理（emitter 断言用）。 */
@@ -263,8 +372,7 @@ class AgentTaskAppServiceTest {
     }
 
     private Map<String, Object> envelopePayload(SseServerEvent event) {
-        com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope envelope =
-                (com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope) event.data();
+        EventEnvelope envelope = (EventEnvelope) event.data();
         return envelope.payload();
     }
 

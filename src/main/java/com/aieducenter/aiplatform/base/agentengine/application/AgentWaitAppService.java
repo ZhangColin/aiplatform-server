@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cartisan.core.exception.ApplicationException;
+import com.cartisan.core.exception.BaseCodeMessage;
 
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.WaitSettleCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
@@ -141,25 +142,28 @@ public class AgentWaitAppService {
 
     /**
      * 答复等待点（REST 命令形态）：按 type 映射三型后走 {@link #settle(String, WaitSettlement)}。
-     * 型内必填缺失抛 IllegalArgumentException（全局异常处理的 400 面）。
+     * 型内必填缺失抛 ApplicationException（BaseCodeMessage.BAD_REQUEST，全局异常
+     * 处理的 400 面——IllegalArgumentException 无映射会落 500）。
      */
     public void settle(String workspaceId, String waitId, WaitSettleCommand command) {
         settle(workspaceId, switch (command.type()) {
             case WaitSettleCommand.TYPE_ANSWER -> {
                 if (command.answers() == null || command.answers().isEmpty()) {
-                    throw new IllegalArgumentException("type=answer 必填 answers");
+                    throw new ApplicationException(BaseCodeMessage.BAD_REQUEST,
+                            "type=answer 必填 answers");
                 }
                 yield new WaitSettlement.Answer(waitId, command.answers());
             }
             case WaitSettleCommand.TYPE_PERMISSION -> {
                 if (command.approve() == null) {
-                    throw new IllegalArgumentException("type=permission 必填 approve");
+                    throw new ApplicationException(BaseCodeMessage.BAD_REQUEST,
+                            "type=permission 必填 approve");
                 }
                 yield new WaitSettlement.PermissionDecision(waitId, command.approve());
             }
             case WaitSettleCommand.TYPE_DEFERRED -> new WaitSettlement.Deferred(
                     waitId, command.note());
-            default -> throw new IllegalArgumentException(
+            default -> throw new ApplicationException(BaseCodeMessage.BAD_REQUEST,
                     "type 取值必须是 answer / permission / deferred: " + command.type());
         });
     }

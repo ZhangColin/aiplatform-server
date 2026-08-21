@@ -1,0 +1,142 @@
+package com.aieducenter.aiplatform.business.project.application;
+
+import java.util.Map;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import com.cartisan.core.exception.ApplicationException;
+import com.cartisan.data.jpa.id.TsidGenerator;
+
+import com.aieducenter.aiplatform.base.agentengine.application.AgentRunContext;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppService;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
+import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
+import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
+import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
+import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
+import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
+import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
+import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
+import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
+import com.aieducenter.aiplatform.business.project.domain.model.RolePreset;
+import com.aieducenter.aiplatform.business.project.domain.repository.IterationRepository;
+import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepository;
+
+import lombok.extern.slf4j.Slf4j;
+
+/**
+ * 项目智能体任务编排（demo AgentController.task 的重写，B0 §1 拆解）：角色卡
+ * 解析（显式入参或阶段默认）→ role-assigned 发射 → 引擎下发（底座编排入口带上
+ * runId/计量归属/流关联）→ 阶段计数。
+ *
+ * <p>计量归属（A1 §2.4）：subject=projectId、dims={role, stage}——业务维度随
+ * UsageEvent 落 met_usage_events；SSE 桥接（ADR-0001 编排层发射制）：projectId
+ * 经 {@link AgentRunContext} 注入 agent 流每帧（含底座补发的 wait-raised），
+ * {@code role-assigned} 由本层在 run 下发前发射（帧序 role-assigned →
+ * task-start → session-created → …）。引擎交互不进业务事务（秒到分钟级），
+ * 阶段计数是单行落库（仓储自带事务）。</p>
+ */
+@Service
+@Slf4j
+public class ProjectAgentTaskAppService {
+
+    private final ProjectRepository projectRepository;
+    private final IterationRepository iterationRepository;
+    private final AgentTaskAppService agentTaskAppService;
+    private final AgentStreamAppService streamAppService;
+    private final TransactionTemplate transactionTemplate;
+
+    public ProjectAgentTaskAppService(ProjectRepository projectRepository,
+                                      IterationRepository iterationRepository,
+                                      AgentTaskAppService agentTaskAppService,
+                                      AgentStreamAppService streamAppService,
+                                      TransactionTemplate transactionTemplate) {
+        this.projectRepository = projectRepository;
+        this.iterationRepository = iterationRepository;
+        this.agentTaskAppService = agentTaskAppService;
+        this.streamAppService = streamAppService;
+        this.transactionTemplate = transactionTemplate;
+    }
+
+    /**
+     * 下发项目任务（手动 DEV/ARCH 或前缀段自动 BA/DEMO）：run 被引擎接受即计入
+     * 当前阶段计数（门禁输入）。期已收口不计数（工具与过程正交，任务照常跑）。
+     */
+    public ProjectAgentTaskResponse dispatchTask(Long projectId, ProjectAgentTaskCommand command) {
+        Project project = requireProject(projectId);
+        Iteration openIteration = iterationRepository
+                .findByProjectIdAndStatus(projectId, IterationStatus.OPEN)
+                .orElse(null);
+        RolePreset role = resolveRole(command.role(), openIteration);
+        String stage = openIteration != null ? openIteration.getStage()
+                : ProjectMainChain.STAGE_CLOSED;
+
+        String runId = newRunId();
+        emitRoleAssigned(projectId, runId, role, stage, project.getEngine());
+
+        AgentTaskResponse result = agentTaskAppService.dispatch(
+                Long.toString(project.getWorkspaceId()),
+                new AgentTaskDispatchCommand(command.prompt(), role.systemPrompt(),
+                        role.modelId(), project.getEngine(), null),
+                new AgentRunContext(runId,
+                        new UsageContext(Long.toString(projectId),
+                                Map.of("role", role.name(), "stage", stage)),
+                        Map.of(AgentStreamAppService.PROJECT_FIELD, Long.toString(projectId))));
+
+        if (result.accepted() && openIteration != null) {
+            transactionTemplate.executeWithoutResult(status -> {
+                openIteration.recordStageTask();
+                iterationRepository.save(openIteration);
+            });
+        }
+        return new ProjectAgentTaskResponse(result.runId(), result.sessionId(),
+                result.engine(), role.name(), role.getName(), stage, result.accepted());
+    }
+
+    // ---------- 内部 ----------
+
+    /** 角色解析：显式入参优先（REST 整型 code 已解码）；缺省取 OPEN 期当前阶段
+     * 的默认角色（无则 409 PRJ_004）。defaultRole 字符串解析失败是主链定义与
+     * preset 的装配错误，防御性 400 PRJ_003。 */
+    private RolePreset resolveRole(RolePreset explicit, Iteration openIteration) {
+        if (explicit != null) {
+            return explicit;
+        }
+        String stage = openIteration != null ? openIteration.getStage()
+                : ProjectMainChain.STAGE_CLOSED;
+        String defaultRole = ProjectMainChain.definition().find(stage)
+                .orElseThrow(() -> new ApplicationException(ProjectMessage.PROJECT_FIELDS_INCOMPLETE))
+                .defaultRole();
+        if (defaultRole == null) {
+            throw new ApplicationException(ProjectMessage.ROLE_REQUIRED);
+        }
+        return RolePreset.byName(defaultRole)
+                .orElseThrow(() -> new ApplicationException(ProjectMessage.ROLE_UNKNOWN));
+    }
+
+    /** role-assigned 发射（run 下发前——帧序 role-assigned → task-start → …）。 */
+    private void emitRoleAssigned(Long projectId, String runId, RolePreset role, String stage,
+                                  String engine) {
+        streamAppService.publish(AgentEventTypes.ROLE_ASSIGNED, Map.of(
+                AgentStreamAppService.PROJECT_FIELD, Long.toString(projectId),
+                AgentStreamAppService.RUN_FIELD, runId,
+                AgentEventTypes.ROLE_FIELD, role.name(),
+                AgentEventTypes.ROLE_LABEL_FIELD, role.getName(),
+                AgentEventTypes.ROLE_STAGE_FIELD, stage,
+                AgentEventTypes.ROLE_ENGINE_FIELD, engine));
+    }
+
+    private Project requireProject(Long projectId) {
+        return projectRepository.findById(projectId)
+                .orElseThrow(() -> new ApplicationException(ProjectMessage.PROJECT_NOT_FOUND));
+    }
+
+    /** runId 生成（任务端点生成，ADR-0001）：TSID 十进制字符串（与底座同构）。 */
+    private String newRunId() {
+        return Long.toString(TsidGenerator.newInstance().generate());
+    }
+}

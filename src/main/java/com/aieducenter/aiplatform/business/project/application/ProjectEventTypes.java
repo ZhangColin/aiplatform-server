@@ -1,0 +1,44 @@
+package com.aieducenter.aiplatform.business.project.application;
+
+/**
+ * 平台通知事件名册常量（ADR-0001：代码侧每 BC 一个 EventTypes 常量类，禁止字符串
+ * 字面量散落；正本见 docs/spec/SSE事件清单.md·通道一）。本上下文编排层在副作用
+ * 真实落定后发射（base 不发 SSE——底座零业务概念的自然推论）。
+ */
+public final class ProjectEventTypes {
+
+    /** 工作区已建（容器 + 中间件就绪，建项目副作用落定后）。 */
+    public static final String WORKSPACE_CREATED = "workspace-created";
+
+    /** 阶段推进/驳回停留（含建项目起始段 BA；驳回带 reason 归片5b）。 */
+    public static final String STAGE_CHANGED = "stage-changed";
+
+    /** 工作区已销毁（删除级联清理落定后）。 */
+    public static final String WORKSPACE_DESTROYED = "workspace-destroyed";
+
+    // ---------- payload 契约键（SSE事件清单·通道一） ----------
+
+    /** 关联字段（通知通道 streamId 同值）。 */
+    public static final String PROJECT_ID_FIELD = "projectId";
+
+    /** 项目名。 */
+    public static final String PROJECT_NAME_FIELD = "projectName";
+
+    /** dev 容器名。 */
+    public static final String CONTAINER_FIELD = "container";
+
+    /** 项目类型（枚举名）。 */
+    public static final String PROJECT_TYPE_FIELD = "projectType";
+
+    /** 引擎名（注册表键）。 */
+    public static final String ENGINE_FIELD = "engine";
+
+    /** 阶段名稳定键。 */
+    public static final String STAGE_FIELD = "stage";
+
+    /** 阶段展示标签。 */
+    public static final String STAGE_LABEL_FIELD = "stageLabel";
+
+    private ProjectEventTypes() {
+    }
+}

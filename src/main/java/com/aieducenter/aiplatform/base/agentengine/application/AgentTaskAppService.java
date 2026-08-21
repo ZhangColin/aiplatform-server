@@ -14,6 +14,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.command.Agent
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentQuestionReplyCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
 import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
@@ -65,26 +66,42 @@ public class AgentTaskAppService {
     }
 
     /**
-     * 下发任务：runId 生成 → 引擎路由 → 适配器异步起跑（过程事件透传 agent 流通道）
-     * → 会话登记/续跑。accepted=false 不落会话，失败原因经 error 事件表达。
+     * 下发任务（底座任务端点形态）：runId 生成 → 引擎路由 → 适配器异步起跑（过程事件
+     * 透传 agent 流通道）→ 会话登记/续跑。accepted=false 不落会话，失败原因经
+     * error 事件表达。
      */
     public AgentTaskResponse dispatch(String workspaceId, AgentTaskDispatchCommand command) {
+        return dispatch(workspaceId, command, null);
+    }
+
+    /**
+     * 下发任务（片5 业务编排入口，{@link AgentRunContext}）：业务侧带上 runId /
+     * 计量归属 / 流关联字段下发，其余编排与会话登记 / 等待点接线与底座端点同流程
+     * ——runId 缺省生成、UsageContext 缺省 workspaceId 兜底、关联字段随帧注入
+     * agent 流 payload（带关联时 wait-raised 落库后补发）。
+     */
+    public AgentTaskResponse dispatch(String workspaceId, AgentTaskDispatchCommand command,
+                                      AgentRunContext runContext) {
         WorkspaceHandle handle = workspaceHandleClient.handleOf(workspaceId);
         AgentEngineRegistry.RegisteredEngine engine = command.engine() == null || command.engine().isBlank()
                 ? registry.defaultEngine() : registry.require(command.engine());
-        String runId = newRunId();
+        String runId = runContext != null && runContext.runId() != null && !runContext.runId().isBlank()
+                ? runContext.runId() : newRunId();
         if (command.sessionId() != null && !command.sessionId().isBlank()) {
             requireSessionForReuse(handle, engine.info().name(), command.sessionId());
             // 复用前清理残留等待点（A1 §1.3：死状态等待点会让续跑任务全卡）
             waitAppService.cancelSessionWaits(command.sessionId());
         }
         // 计量归属兜底：底座端点无业务 subject，以 workspaceId（中性键）归属；
-        // dims 无业务维度可透传，空集
+        // 业务编排入口（runContext）自带 subject=projectId + 业务 dims（A1 §2.4）
+        UsageContext usageContext = runContext != null && runContext.usageContext() != null
+                ? runContext.usageContext() : new UsageContext(workspaceId, Map.of());
         AgentTaskCommand taskCommand = new AgentTaskCommand(
                 runId, command.prompt(), command.systemPrompt(), command.modelId(),
-                command.sessionId(), new UsageContext(workspaceId, Map.of()));
+                command.sessionId(), usageContext);
 
-        RunResult result = engine.adapter().runTask(handle, taskCommand, streamSink(workspaceId));
+        RunResult result = engine.adapter().runTask(handle, taskCommand,
+                streamSink(workspaceId, runContext == null ? null : runContext.streamCorrelation()));
         if (result.accepted()) {
             recordSession(handle.workspaceId().id(), engine.info().name(),
                     result.sessionId(), runId);
@@ -144,16 +161,26 @@ public class AgentTaskAppService {
     // ---------- 内部 ----------
 
     /**
-     * agent 流桥：适配器回调透传（payload 已带 runId；补底座中性寻址 workspaceId）。
-     * 片2b 拦截两类：{@code wait-raised} 落库即闭不透传（waitId 落库才存在，透传
-     * 半成品事件无消费方；SSE 发射归编排层桥接 #22）；run 终态（task-finish/error，
-     * 超时也是 error 表达）联动其 PENDING 等待点 → EXPIRED 后照常透传。
+     * agent 流桥：适配器回调透传（payload 已带 runId；补底座中性寻址 workspaceId，
+     * 带编排关联字段时一并注入）。片2b 拦截两类：{@code wait-raised} 落库即闭——
+     * 中性调用方不透传（waitId 落库才存在，透传半成品事件无消费方），带关联字段的
+     * 编排调用方（片5 业务桥）在落库成功后补发（发射归编排层的口径：底座只对
+     * 带关联的调用方补发，底座端点行为不变）；run 终态（task-finish/error，超时
+     * 也是 error 表达）联动其 PENDING 等待点 → EXPIRED 后照常透传。
      */
-    private Consumer<AgentEvent> streamSink(String workspaceId) {
+    private Consumer<AgentEvent> streamSink(String workspaceId, Map<String, Object> correlation) {
+        boolean correlated = correlation != null && !correlation.isEmpty();
         return event -> {
             if (AgentEventTypes.WAIT_RAISED.equals(event.type())) {
                 try {
-                    waitAppService.raiseFromEvent(Long.parseLong(workspaceId), event.payload());
+                    WaitPointResponse raised = waitAppService.raiseFromEvent(
+                            Long.parseLong(workspaceId), event.payload());
+                    if (correlated && raised != null) {
+                        Map<String, Object> payload = new LinkedHashMap<>(event.payload());
+                        payload.put(AgentEventTypes.WAIT_ID_FIELD, raised.waitId());
+                        streamAppService.publish(event.type(),
+                                withAddressing(payload, workspaceId, correlation));
+                    }
                 } catch (RuntimeException e) {
                     // 落库失败不拖垮流桥：等待点丢了可经引擎重查/重上报收敛
                     log.warn("[agentengine] wait-raised 落库失败（{}）：{}", workspaceId,
@@ -161,8 +188,7 @@ public class AgentTaskAppService {
                 }
                 return;
             }
-            Map<String, Object> payload = new LinkedHashMap<>(event.payload());
-            payload.put(AgentStreamAppService.WORKSPACE_FIELD, workspaceId);
+            Map<String, Object> payload = withAddressing(event.payload(), workspaceId, correlation);
             Object runId = payload.get(AgentStreamAppService.RUN_FIELD);
             if ((AgentEventTypes.TASK_FINISH.equals(event.type())
                     || AgentEventTypes.ERROR.equals(event.type()))
@@ -177,6 +203,18 @@ public class AgentTaskAppService {
             }
             streamAppService.publish(event.type(), payload);
         };
+    }
+
+    /** 帧寻址注入：底座中性 workspaceId + 编排关联字段（如 projectId，透传不解释）。 */
+    private static Map<String, Object> withAddressing(Map<String, Object> payload,
+                                                       String workspaceId,
+                                                       Map<String, Object> correlation) {
+        Map<String, Object> addressed = new LinkedHashMap<>(payload);
+        addressed.put(AgentStreamAppService.WORKSPACE_FIELD, workspaceId);
+        if (correlation != null) {
+            addressed.putAll(correlation);
+        }
+        return addressed;
     }
 
     /** 会话登记 / 续跑：返回的 sessionId 已登记则刷新最近运行（dsh 续跑换新会话即新登记）。 */

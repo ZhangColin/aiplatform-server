@@ -375,14 +375,17 @@ class AgentWaitAppServiceTest {
 
     @Test
     void given_answer_command_without_answers_when_settle_then_rejected() {
+        // 400 面：BaseCodeMessage.BAD_REQUEST（detail 参数进 errors 数组，不进 message）
         assertThatThrownBy(() -> appService.settle(WORKSPACE, "wait_x",
                 new WaitSettleCommand(WaitSettleCommand.TYPE_ANSWER, null, null, null)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("answers");
+                .isInstanceOf(com.cartisan.core.exception.ApplicationException.class)
+                .hasMessageContaining(
+                        com.cartisan.core.exception.BaseCodeMessage.BAD_REQUEST.message());
         assertThatThrownBy(() -> appService.settle(WORKSPACE, "wait_x",
                 new WaitSettleCommand("bogus", null, null, null)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("type");
+                .isInstanceOf(com.cartisan.core.exception.ApplicationException.class)
+                .hasMessageContaining(
+                        com.cartisan.core.exception.BaseCodeMessage.BAD_REQUEST.message());
     }
 
     // ---------- 终态联动与复用清理 ----------
