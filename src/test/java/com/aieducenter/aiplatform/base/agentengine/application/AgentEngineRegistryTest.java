@@ -122,6 +122,11 @@ class AgentEngineRegistryTest {
         }
 
         @Override
+        public boolean abort(WorkspaceHandle handle, String sessionId) {
+            return false;
+        }
+
+        @Override
         public boolean health(WorkspaceHandle handle) {
             return false;
         }

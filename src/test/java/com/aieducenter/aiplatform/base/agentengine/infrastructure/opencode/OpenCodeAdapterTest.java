@@ -58,6 +58,8 @@ class OpenCodeAdapterTest {
         serve = new StubServe();
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", serve);
+        // 事件总线的 /event 帧是长连接（handler 阻塞发送）——线程池化防饿死其他端点
+        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         server.start();
         int port = server.getAddress().getPort();
 
@@ -167,6 +169,7 @@ class OpenCodeAdapterTest {
 
     @Test
     void given_pending_questions_when_pendingQuestions_then_filtered_by_session() {
+        serve.questionVisible = true;
         List<Map<String, Object>> questions = adapter.pendingQuestions(handle, SESSION_ID);
 
         assertThat(questions).hasSize(1);
@@ -195,7 +198,72 @@ class OpenCodeAdapterTest {
         assertThat(adapter.health(handle)).isTrue();
     }
 
+    @Test
+    void given_abort_when_called_then_session_abort_posted() {
+        assertThat(adapter.abort(handle, SESSION_ID)).isTrue();
+
+        assertThat(serve.abortCalls).containsExactly(SESSION_ID);
+    }
+
+    @Test
+    void given_pending_question_when_run_in_flight_then_wait_raised_question_emitted()
+            throws InterruptedException {
+        serve.questionVisible = true;
+        List<AgentEvent> events = new CopyOnWriteArrayList<>();
+
+        adapter.runTask(handle, command("run-q", null, null), events::add);
+
+        AgentEvent raised = awaitEvent(events, AgentEventTypes.WAIT_RAISED);
+        // 问答发现：引擎 question 载荷原样进 data，中性短文本已提取
+        assertThat(raised.payload())
+                .containsEntry("runId", "run-q")
+                .containsEntry("sessionId", SESSION_ID)
+                .containsEntry("kind", "QUESTION")
+                .containsEntry("engineRef", "que_1")
+                .containsEntry("summary", "用哪个框架?");
+        assertThat(raised.payload().get("data"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("id", "que_1");
+    }
+
+    @Test
+    void given_permission_on_bus_when_run_in_flight_then_wait_raised_permission_emitted()
+            throws InterruptedException {
+        serve.permissionOnBus = true;
+        List<AgentEvent> events = new CopyOnWriteArrayList<>();
+
+        adapter.runTask(handle, command("run-p", null, null), events::add);
+
+        AgentEvent raised = awaitEvent(events, AgentEventTypes.WAIT_RAISED);
+        // 权限发现：总线 permission.updated 的 properties 即引擎载荷，title 为摘要
+        assertThat(raised.payload())
+                .containsEntry("kind", "PERMISSION")
+                .containsEntry("engineRef", "per_9")
+                .containsEntry("summary", "执行 npm install");
+        assertThat(raised.payload().get("data"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("sessionID", SESSION_ID);
+        // run 结束后通道收口：terminal 事件仍在（watcher 不干扰主流程）
+        awaitEnd(events);
+    }
+
     // ---------- 测试替身 ----------
+
+    /** 等待某类事件抵达（watcher 线程异步上报的同步缝）。 */
+    private AgentEvent awaitEvent(List<AgentEvent> events, String type)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline) {
+            for (AgentEvent event : events) {
+                if (event.type().equals(type)) {
+                    return event;
+                }
+            }
+            Thread.sleep(50);
+        }
+        assertThat(events).extracting(AgentEvent::type).contains(type);
+        throw new IllegalStateException("unreachable");
+    }
 
     private AgentTaskCommand command(String runId, String sessionId, UsageContext usageContext) {
         return new AgentTaskCommand(runId, "写个落地页", "你是开发工程师", null,
@@ -237,15 +305,22 @@ class OpenCodeAdapterTest {
         }
     }
 
-    /** 本地假 serve：opencode 1.18 已核对端点的最小行为复刻。 */
+    /** 本地假 serve：opencode 1.18 已核对端点的最小行为复刻（含事件总线 /event）。 */
     private static final class StubServe implements com.sun.net.httpserver.HttpHandler {
 
         private final ObjectMapper mapper = new ObjectMapper();
         final AtomicInteger sessionCreates = new AtomicInteger();
         final List<String> messagePaths = new CopyOnWriteArrayList<>();
+        final List<String> abortCalls = new CopyOnWriteArrayList<>();
         volatile boolean failMessages;
         volatile JsonNode lastReplyBody;
         volatile JsonNode lastPermissionBody;
+        /** 问答是否对 watcher 可见（默认隐藏——不影响既有严格事件序断言）。 */
+        volatile boolean questionVisible;
+        /** 是否在事件总线上推 permission.updated（权限发现通道的注入点）。 */
+        volatile boolean permissionOnBus;
+        /** 权限帧已写出（message 响应等它——保证 watcher 先于 run 结束检出）。 */
+        volatile boolean permissionDelivered;
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -264,6 +339,13 @@ class OpenCodeAdapterTest {
                 } else if (path.equals("/session/" + SESSION_ID + "/message")) {
                     messagePaths.add(path);
                     drain(exchange);
+                    if (permissionOnBus) {
+                        // message 同步阻塞直到权限帧已上总线（复刻「agent 提问时阻塞」，
+                        // 兼作 watcher 检出的确定性时序）
+                        while (!permissionDelivered) {
+                            Thread.sleep(20);
+                        }
+                    }
                     if (failMessages) {
                         respond(exchange, 500, "{\"name\":\"UnknownError\",\"data\":{\"message\":\"boom\"}}");
                         return;
@@ -278,6 +360,10 @@ class OpenCodeAdapterTest {
                             ]}
                             """);
                 } else if (path.equals("/question") ) {
+                    if (!questionVisible) {
+                        respond(exchange, 200, "[]");
+                        return;
+                    }
                     respond(exchange, 200, """
                             [{"id":"que_1","sessionID":"%s","questions":[{"question":"用哪个框架?"}]},
                              {"id":"que_2","sessionID":"ses_other","questions":[]}]
@@ -288,12 +374,49 @@ class OpenCodeAdapterTest {
                 } else if (path.contains("/permissions/")) {
                     lastPermissionBody = mapper.readTree(drain(exchange));
                     respond(exchange, 200, "{}");
+                } else if (path.equals("/session/" + SESSION_ID + "/abort")) {
+                    abortCalls.add(SESSION_ID);
+                    drain(exchange);
+                    respond(exchange, 200, "true");
+                } else if (path.equals("/event")) {
+                    streamEventBus(exchange);
                 } else {
                     respond(exchange, 404, "{}");
                 }
             } catch (Exception e) {
                 respond(exchange, 500, "{}");
             }
+        }
+
+        /** /event SSE：首帧 server.connected，按需再推一帧 permission.updated。 */
+        private void streamEventBus(HttpExchange exchange) throws Exception {
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream out = exchange.getResponseBody()) {
+                writeFrame(out, "{\"id\":\"e0\",\"type\":\"server.connected\",\"properties\":{}}");
+                if (permissionOnBus) {
+                    // 1.18 wire 格式：{id, type, properties}（properties = Permission 全量）
+                    writeFrame(out, """
+                            {"id":"e1","type":"permission.updated","properties":{
+                              "id":"per_9","sessionID":"%s","messageID":"msg_1",
+                              "type":"bash","title":"执行 npm install",
+                              "metadata":{},"time":{"created":1}}
+                            }
+                            """.formatted(SESSION_ID).replace("\n", ""));
+                    permissionDelivered = true;
+                }
+                // 保持连接直到对端断开（run 结束 watcher 停止即断）或测试收尾
+                while (!exchange.getRequestMethod().isEmpty()) {
+                    Thread.sleep(100);
+                }
+            } catch (IOException | InterruptedException e) {
+                // 对端断开/服务停止：连接自然收尾
+            }
+        }
+
+        private void writeFrame(OutputStream out, String json) throws IOException {
+            out.write(("data: " + json + "\n\n").getBytes(StandardCharsets.UTF_8));
+            out.flush();
         }
 
         private String drain(HttpExchange exchange) throws IOException {

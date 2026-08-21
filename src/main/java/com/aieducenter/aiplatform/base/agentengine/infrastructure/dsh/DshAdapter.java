@@ -204,6 +204,13 @@ public class DshAdapter implements CodingAgentAdapter {
     }
 
     @Override
+    public boolean abort(WorkspaceHandle handle, String sessionId) {
+        // 无可终止的常驻运行：headless 一次性任务随 exec 结束；deny cap 依赖权限通道
+        // （本引擎恒无权限等待点），此路径实际不可达——如实返回 false
+        return false;
+    }
+
+    @Override
     public boolean health(WorkspaceHandle handle) {
         // 环境里装了 dsh 且 CLI 可用 = 就绪（不需要 serve 进程）
         ExecResult r = environmentBackend.exec(handle, "command -v dsh >/dev/null 2>&1 && dsh --version");

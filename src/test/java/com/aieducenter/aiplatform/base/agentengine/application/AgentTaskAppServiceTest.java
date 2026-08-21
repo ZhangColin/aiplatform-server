@@ -38,12 +38,15 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 任务编排用例（票 #20）：runId 生成、引擎路由、会话登记/续跑校验、计量归属兜底
- * （subject=workspaceId）、agent 流桥（事件补 workspaceId 后透传通道）。
+ * 任务编排用例（票 #20 + #21 等待点接线）：runId 生成、引擎路由、会话登记/续跑校验、
+ * 计量归属兜底（subject=workspaceId）、agent 流桥（事件补 workspaceId 后透传通道）；
+ * 片2b——复用会话前清理残留等待点、wait-raised 落库不透传、run 终态联动 EXPIRED。
  */
 @ExtendWith(MockitoExtension.class)
 class AgentTaskAppServiceTest {
@@ -54,6 +57,8 @@ class AgentTaskAppServiceTest {
 
     @Mock
     private AgentSessionRepository sessionRepository;
+    @Mock
+    private AgentWaitAppService waitAppService;
 
     private final FakeWorkspaceHandleClient handleClient = new FakeWorkspaceHandleClient();
     private final StubAdapter stubAdapter = new StubAdapter();
@@ -67,7 +72,7 @@ class AgentTaskAppServiceTest {
                 Duration.ofSeconds(600));
         appService = new AgentTaskAppService(handleClient,
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, new DshStubAdapter())),
-                sessionRepository, new AgentStreamAppService(hub));
+                sessionRepository, new AgentStreamAppService(hub), waitAppService);
     }
 
     @AfterEach
@@ -119,7 +124,7 @@ class AgentTaskAppServiceTest {
     }
 
     @Test
-    void given_reuse_session_when_dispatch_then_validated_and_touched() {
+    void given_reuse_session_when_dispatch_then_validated_touched_and_stale_waits_cleaned() {
         stubAdapter.nextResult = new RunResult("ignored", "ses_exist", true);
         AgentSession existing = AgentSession.open(WORKSPACE_ID, "opencode", "ses_exist", "run-old");
         when(sessionRepository.findBySessionId("ses_exist"))
@@ -134,6 +139,8 @@ class AgentTaskAppServiceTest {
         // 续跑刷新最近运行（同聚合行 ranOn，不新开）
         verify(sessionRepository).save(existing);
         assertThat(existing.getLastRunId()).isEqualTo(response.runId());
+        // 片2b：复用前清理该会话残留等待点（「有则先清理再跑」）
+        verify(waitAppService).cancelSessionWaits("ses_exist");
     }
 
     @Test
@@ -184,7 +191,7 @@ class AgentTaskAppServiceTest {
         dsh.nextSessionId = "dsh-new";
         AgentTaskAppService dshService = new AgentTaskAppService(handleClient,
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, dsh)),
-                sessionRepository, new AgentStreamAppService(hub));
+                sessionRepository, new AgentStreamAppService(hub), waitAppService);
         AgentSession existing = AgentSession.open(WORKSPACE_ID, "dsh", "dsh-old", "run-old");
         when(sessionRepository.findBySessionId("dsh-old")).thenReturn(Optional.of(existing));
         when(sessionRepository.findBySessionId("dsh-new")).thenReturn(Optional.empty());
@@ -196,6 +203,52 @@ class AgentTaskAppServiceTest {
         ArgumentCaptor<AgentSession> saved = ArgumentCaptor.forClass(AgentSession.class);
         verify(sessionRepository).save(saved.capture());
         assertThat(saved.getValue().getSessionId()).isEqualTo("dsh-new");
+    }
+
+    @Test
+    void given_no_reuse_when_dispatch_then_no_wait_cleanup() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null));
+
+        // 新会话下发无残留可清理，不触发等待点清理
+        verify(waitAppService, never()).cancelSessionWaits(any());
+    }
+
+    @Test
+    void given_wait_raised_event_when_streamed_then_persisted_and_not_forwarded() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        stubAdapter.emitWaitRaised = true;
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null));
+
+        // 落库：wait-raised 载荷交给等待点用例（SSE 发射归 #22，底座不透传）
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(waitAppService).raiseFromEvent(eq(WORKSPACE_ID), payload.capture());
+        assertThat(payload.getValue()).containsEntry("engineRef", "que_1")
+                .containsEntry("kind", "QUESTION");
+        // 通道只见平台两帧（task-start/task-finish），无 wait-raised 半成品事件透传
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope)
+                                frame.data()).type())
+                .containsExactly("task-start", "task-finish");
+    }
+
+    @Test
+    void given_run_terminal_event_when_streamed_then_pending_waits_expired() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null));
+
+        // run 终态（task-finish，超时/失败路径走 error 同拦）：其 PENDING 等待点联动 EXPIRED
+        verify(waitAppService).expireRun(capturedRunId());
     }
 
     // ---------- 替身与工具 ----------
@@ -223,10 +276,11 @@ class AgentTaskAppServiceTest {
         }
     }
 
-    /** 引擎替身：发射两帧事件 + 可注入的同步结果。 */
+    /** 引擎替身：发射两帧事件 + 可注入的同步结果（wait-raised 可选加发）。 */
     private static class StubAdapter implements CodingAgentAdapter {
 
         RunResult nextResult = RunResult.rejected("ignored");
+        volatile boolean emitWaitRaised;
         final CopyOnWriteArrayList<AgentTaskCommand> received = new CopyOnWriteArrayList<>();
 
         @Override
@@ -260,6 +314,15 @@ class AgentTaskAppServiceTest {
             received.add(command);
             sink.accept(new AgentEvent(com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes.TASK_START,
                     Map.of("runId", command.runId(), "prompt", command.prompt())));
+            if (emitWaitRaised) {
+                // 片2b 发现通道形态：wait-raised 平台事件（引擎载荷进 data）
+                sink.accept(new AgentEvent(
+                        com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes.WAIT_RAISED,
+                        Map.of("runId", command.runId(), "sessionId", "ses_new",
+                                "kind", "QUESTION", "summary", "用哪个框架?",
+                                "engineRef", "que_1",
+                                "data", Map.of("id", "que_1"))));
+            }
             sink.accept(new AgentEvent(com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes.TASK_FINISH,
                     Map.of("runId", command.runId(), "finish", "end")));
             return nextResult.sessionId() == null
@@ -280,6 +343,11 @@ class AgentTaskAppServiceTest {
         @Override
         public void replyPermission(WorkspaceHandle handle, String sessionId,
                                     String permissionId, boolean approve) {
+        }
+
+        @Override
+        public boolean abort(WorkspaceHandle handle, String sessionId) {
+            return false;
         }
 
         @Override

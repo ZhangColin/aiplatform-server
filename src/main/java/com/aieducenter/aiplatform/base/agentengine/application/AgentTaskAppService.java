@@ -17,6 +17,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.response.Agen
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
 import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
+import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentTaskCommand;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.RunResult;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
@@ -27,9 +28,14 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 任务下发与交互用例（片2a）：底座任务端点的编排——runId 生成（ADR-0001：任务端点
- * 生成并随响应返回）、引擎路由（注册表显式寻址）、会话落库（复用校验 + 登记续跑）、
- * agent 流桥（适配器回调 → agent-events 通道透传）。
+ * 任务下发与交互用例（片2a + 片2b 等待点接线）：底座任务端点的编排——runId 生成
+ * （ADR-0001：任务端点生成并随响应返回）、引擎路由（注册表显式寻址）、会话落库
+ * （复用校验 + 登记续跑）、agent 流桥（适配器回调 → agent-events 通道透传）。
+ *
+ * <p>片2b 等待点接线（A1 §1.3 避雷落点）：复用 sessionId 下发前清理该会话残留
+ * 等待点（{@link AgentWaitAppService#cancelSessionWaits}，「有则先清理再跑」）；
+ * 流桥拦截 {@code wait-raised} 落库不透传（SSE 发射归编排层桥接，票 #22）、
+ * run 终态事件（task-finish/error，含超时）联动其 PENDING 等待点 → EXPIRED。</p>
  *
  * <p>事务形态：引擎交互（HTTP / docker exec，秒到分钟级）不进事务；会话登记是
  * 单行落库（仓储自带事务）。片5 business.project 接管业务编排时经
@@ -44,15 +50,18 @@ public class AgentTaskAppService {
     private final AgentEngineRegistry registry;
     private final AgentSessionRepository sessionRepository;
     private final AgentStreamAppService streamAppService;
+    private final AgentWaitAppService waitAppService;
 
     public AgentTaskAppService(WorkspaceHandleClient workspaceHandleClient,
                                AgentEngineRegistry registry,
                                AgentSessionRepository sessionRepository,
-                               AgentStreamAppService streamAppService) {
+                               AgentStreamAppService streamAppService,
+                               AgentWaitAppService waitAppService) {
         this.workspaceHandleClient = workspaceHandleClient;
         this.registry = registry;
         this.sessionRepository = sessionRepository;
         this.streamAppService = streamAppService;
+        this.waitAppService = waitAppService;
     }
 
     /**
@@ -66,6 +75,8 @@ public class AgentTaskAppService {
         String runId = newRunId();
         if (command.sessionId() != null && !command.sessionId().isBlank()) {
             requireSessionForReuse(handle, engine.info().name(), command.sessionId());
+            // 复用前清理残留等待点（A1 §1.3：死状态等待点会让续跑任务全卡）
+            waitAppService.cancelSessionWaits(command.sessionId());
         }
         // 计量归属兜底：底座端点无业务 subject，以 workspaceId（中性键）归属；
         // dims 无业务维度可透传，空集
@@ -132,11 +143,38 @@ public class AgentTaskAppService {
 
     // ---------- 内部 ----------
 
-    /** agent 流桥：适配器回调透传（payload 已带 runId；补底座中性寻址 workspaceId）。 */
+    /**
+     * agent 流桥：适配器回调透传（payload 已带 runId；补底座中性寻址 workspaceId）。
+     * 片2b 拦截两类：{@code wait-raised} 落库即闭不透传（waitId 落库才存在，透传
+     * 半成品事件无消费方；SSE 发射归编排层桥接 #22）；run 终态（task-finish/error，
+     * 超时也是 error 表达）联动其 PENDING 等待点 → EXPIRED 后照常透传。
+     */
     private Consumer<AgentEvent> streamSink(String workspaceId) {
         return event -> {
+            if (AgentEventTypes.WAIT_RAISED.equals(event.type())) {
+                try {
+                    waitAppService.raiseFromEvent(Long.parseLong(workspaceId), event.payload());
+                } catch (RuntimeException e) {
+                    // 落库失败不拖垮流桥：等待点丢了可经引擎重查/重上报收敛
+                    log.warn("[agentengine] wait-raised 落库失败（{}）：{}", workspaceId,
+                            e.getMessage());
+                }
+                return;
+            }
             Map<String, Object> payload = new LinkedHashMap<>(event.payload());
             payload.put(AgentStreamAppService.WORKSPACE_FIELD, workspaceId);
+            Object runId = payload.get(AgentStreamAppService.RUN_FIELD);
+            if ((AgentEventTypes.TASK_FINISH.equals(event.type())
+                    || AgentEventTypes.ERROR.equals(event.type()))
+                    && runId != null) {
+                try {
+                    waitAppService.expireRun(runId.toString());
+                } catch (RuntimeException e) {
+                    // 联动失败不拖垮终态帧透传（与 wait-raised 落库护栏对称）
+                    log.warn("[agentengine] run 终态等待点联动失败（{}）：{}", runId,
+                            e.getMessage());
+                }
+            }
             streamAppService.publish(event.type(), payload);
         };
     }

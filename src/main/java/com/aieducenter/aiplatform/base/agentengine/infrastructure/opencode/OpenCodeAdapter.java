@@ -59,8 +59,14 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
  *   GET  /question                                       待回答的问题（全局 que_ 机制，按 sessionID 过滤）
  *   POST /question/{requestID}/reply                    回答 {answers:[[label,..],..]}
  *   POST /session/{id}/permissions/{permissionID}       审批 {response: once|reject}
+ *   GET  /event                                          事件总线（SSE；权限发现通道，片2b）
+ *   POST /session/{id}/abort                             终止会话当前运行（deny cap 平台终止）
  *   GET  /global/health                                  健康检查
  * </pre>
+ *
+ * <p>等待点发现（片2b）：run 存续期由 {@link OpenCodeWaitWatcher} 盯住两类挂起——
+ * 权限走事件总线（无列表端点）、问答走 question 轮询——检出即 {@code wait-raised}
+ * 上报 sink，落库归 agentengine 应用层流桥。</p>
  *
  * <p>用量埋点（A1 §2.3 落位）：step-finish 增量在 {@link RunUsageAccumulator} 求和，
  * run 结束（含失败路径）上报 {@code UsageEventSink} 恰一条——幂等键
@@ -178,6 +184,10 @@ public class OpenCodeAdapter implements CodingAgentAdapter {
                                     AgentTaskCommand command, String sessionId, String model,
                                     Consumer<AgentEvent> sink) {
         RunUsageAccumulator usage = new RunUsageAccumulator();
+        // 等待点发现通道（片2b）：run 存续期盯住引擎的问答/权限挂起——消息发送
+        // 期间 agent 提问或请求权限即经 wait-raised 上报；run 结束即停（finally）
+        OpenCodeWaitWatcher watcher = OpenCodeWaitWatcher.start(
+                endpoint, http, mapper, command.runId(), sessionId, sink);
         try {
             // 角色卡（systemPrompt 入参，B0：适配层零角色概念）经 system 字段注入；
             // 模型按调用方档位显式指定（message schema: {providerID, modelID}）
@@ -215,6 +225,7 @@ public class OpenCodeAdapter implements CodingAgentAdapter {
                     "runId", command.runId(),
                     "message", msg)));
         } finally {
+            watcher.stop();
             reportUsage(command, sessionId, usage.total());
         }
     }
@@ -314,6 +325,23 @@ public class OpenCodeAdapter implements CodingAgentAdapter {
                     mapper.createObjectNode().put("response", approve ? "once" : "reject"));
         } catch (Exception e) {
             throw new IllegalStateException("审批回复失败: " + messageOf(e), e);
+        }
+    }
+
+    @Override
+    public boolean abort(WorkspaceHandle handle, String sessionId) {
+        try {
+            OpenCodeServeBootstrap.ServeEndpoint endpoint = bootstrap.ensureRunning(handle);
+            // POST /session/{id}/abort：中止会话当前运行（deny cap 平台终止）；
+            // 被阻塞的 message 调用随之中止返回 → 异步路径发 error/task-finish
+            send(endpoint, "POST",
+                    endpoint.baseUrl() + "/session/" + sessionId + "/abort",
+                    mapper.createObjectNode());
+            return true;
+        } catch (Exception e) {
+            log.warn("[agentengine] 终止 opencode 会话运行失败（session {}）：{}",
+                    sessionId, messageOf(e));
+            return false;
         }
     }
 

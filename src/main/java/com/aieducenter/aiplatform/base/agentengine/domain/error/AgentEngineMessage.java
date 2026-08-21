@@ -15,7 +15,14 @@ public enum AgentEngineMessage implements CodeMessage {
 
     ENGINE_REQUEST_FAILED(502, "AGT_004", "智能体引擎请求失败"),
 
-    SESSION_FIELDS_INCOMPLETE(400, "AGT_005", "agent 会话字段不完整");
+    SESSION_FIELDS_INCOMPLETE(400, "AGT_005", "agent 会话字段不完整"),
+
+    WAIT_NOT_FOUND(404, "AGT_006", "等待点不存在"),
+
+    /** 陈旧等待点答复（非 PENDING）或会话不可续跑——A1 §1.3 避雷「陈旧批准非法跳变」。 */
+    WAIT_CONFLICT(409, "AGT_007", "等待点已关闭或会话不可续跑"),
+
+    WAIT_FIELDS_INCOMPLETE(400, "AGT_008", "等待点字段不完整");
 
     private final int httpStatus;
     private final String code;

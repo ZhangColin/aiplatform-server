@@ -24,6 +24,10 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
  * 引擎能力差异如实暴露（A1 §1.5 能力矩阵）：headless 引擎 pendingQuestions 恒空、
  * reply 为 no-op。</p>
  *
+ * <p>等待点发现（片2b）：有交互通道的实现在 run 存续期把检出的问题/权限以
+ * {@code wait-raised} 平台事件经 sink 上报（payload：runId/sessionId/kind/summary/
+ * engineRef/data=引擎载荷原样），落库归 agentengine 应用层（sink 桥接）。</p>
+ *
  * <p>实现：OpenCodeAdapter（容器内 serve 的 HTTP 接入）/ DshAdapter（环境 exec 的
  * headless 一次性任务）；经 {@code AgentEngineRegistry} 显式注册（不靠 Spring
  * bean 名）。</p>
@@ -67,6 +71,12 @@ public interface CodingAgentAdapter {
     /** 审批回复（人做决策：agent 请求权限时由用户批准/拒绝）。 */
     void replyPermission(WorkspaceHandle handle, String sessionId, String permissionId,
                          boolean approve);
+
+    /**
+     * 终止会话当前运行（deny cap 平台终止路径，A1 §1.3：同 run 内 permission deny
+     * 计数达阈值 → 平台主动终止，防审批循环）。无运行可终止返回 false。
+     */
+    boolean abort(WorkspaceHandle handle, String sessionId);
 
     /** 引擎是否就绪（opencode = serve 可达；dsh = CLI 可用）。 */
     boolean health(WorkspaceHandle handle);
