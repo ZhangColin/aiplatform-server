@@ -33,7 +33,7 @@ fi
 step() { printf '\n==> %s\n' "$*"; }
 urldecode() { python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))'; }
 query_of() { printf '%s' "$1" | sed -n "s/.*[?&]$2=\([^&]*\).*/\1/p" | urldecode; }
-path_and_query() { printf '%s' "$1" | sed -E 's#^[a-zA-Z]+://[^/]+#/##'; }
+path_and_query() { printf '%s' "$1" | sed -E 's#^[a-zA-Z]+://[^/]+##'; }
 
 rm -f "$JAR"
 
