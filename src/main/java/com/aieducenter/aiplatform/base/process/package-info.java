@@ -13,7 +13,11 @@
  *
  * <h3>包结构</h3>
  * <ul>
- *   <li>四层骨架（domain / application / infrastructure / endpoints）随片4 落位</li>
+ *   <li>domain - 领域层：主链定义（StageEntry / ExitGate / MainChainDefinition，构造期
+ *       校验 fail fast）、推进结果（AdvanceResult，门禁不足以值表达由持有方翻译 409
+ *       PRJ_）、StageAdvanceService 阶段推进引擎（纯逻辑）</li>
+ *   <li>application / infrastructure / endpoints - 无：无表无 REST，唯一调用方
+ *       business.project 同进程直调引擎类（B0 蓝图 §2 片4）</li>
  * </ul>
  *
  * @since 0.1.0
