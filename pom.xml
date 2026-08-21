@@ -81,11 +81,8 @@
             <artifactId>cartisan-openapi</artifactId>
             <version>0.1.0-SNAPSHOT</version>
         </dependency>
-        <dependency>
-            <groupId>com.cartisan</groupId>
-            <artifactId>cartisan-security</artifactId>
-            <version>0.1.0-SNAPSHOT</version>
-        </dependency>
+        <!-- 不引入 cartisan-security（Sa-Token 一并不要）：认证走 identity 服务 OIDC + BFF，
+             见 docs/adr/0001-swagger-contract-and-sse-channels.md -->
 
         <!-- Security -->
         <dependency>

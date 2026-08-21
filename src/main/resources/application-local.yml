@@ -1,11 +1,13 @@
+# 本机开发环境：依赖启动方式见 docs/guide/本机依赖启动.md
+# 平台 PG = 本服务独立实例（docker pgvector，5434；5432 是共享 aieducenter 库无 vector，5433 是冻结 demo）
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/aieducenter
-    username: aiedu
-    password: dev123
+    url: jdbc:postgresql://localhost:5434/aiplatform
+    username: aiplatform
+    password: aiplatform-dev
   data:
     redis:
       host: localhost
-      port: 6379
+      port: 6380
 
 spring.jpa.show-sql: true

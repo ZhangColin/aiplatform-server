@@ -18,35 +18,24 @@ spring:
     hibernate:
       ddl-auto: none
     show-sql: false
+  # 分页统一 1 基（ADR-0001：请求/响应均 1 基，默认 size=20）
+  data:
+    web:
+      pageable:
+        one-indexed-parameters: true
+        default-page-size: 20
 
-# Security 拦截配置
+# 机机调用签名（cartisan-openapi；与用户会话无关，ADR-0001）；
+# 默认枚举 Controller 关闭（扫描包默认 com.cartisan/com.example，用不到，避免契约噪音）
 cartisan:
-  security:
-    interceptor:
-      path-patterns:
-        - "/**"
-      exclude-path-patterns:
-        - "/error"
-        - "/actuator/**"
-        - "/auth/login"
-        - "/auth/captcha"
-        - "/health"
-        - "/swagger-ui/**"
-        - "/api-docs/**"
+  web:
+    enum-controller:
+      enabled: false
   openapi:
     self:
       app-id: ${OPENAPI_APP_ID:}
       app-secret: ${OPENAPI_APP_SECRET:}
     apikey-service-url: https://openapi.aieducenter.com/api/v1/api-keys/by-appId
-
-# Sa-Token 配置
-sa-token:
-  token-name: Authorization
-  timeout: 604800
-  active-timeout: -1
-  is-concurrent: true
-  is-share: false
-  token-style: uuid
 
 management:
   endpoints:
