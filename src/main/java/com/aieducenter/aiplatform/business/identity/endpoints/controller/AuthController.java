@@ -18,8 +18,6 @@ import com.aieducenter.aiplatform.business.identity.domain.model.AuthCookies;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.servlet.http.Cookie;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
@@ -57,9 +55,10 @@ public class AuthController {
             identity 302 落点（经前端 3333 同源代理）。state 与事务 cookie 精确比对 →
             换 token（含 JWKS RS256 验签 + iss/aud/exp/nonce）→ 账号 upsert → 种
             aiplatform_session 并 302 回 returnTo。失败 302 回 /?error=state_mismatch
-            或 /?error=exchange_failed（具体原因只进服务端日志）。""")
+            或 /?error=exchange_failed（identity 拒绝授权只带 error 不带 code 时同走
+            exchange_failed；具体原因只进服务端日志）。""")
     public ResponseEntity<Void> callback(
-            @RequestParam("code") String code,
+            @RequestParam(value = "code", required = false) String code,
             @RequestParam(value = "state", required = false) String state,
             @CookieValue(value = AuthCookies.TXN_COOKIE_NAME, required = false) String txn,
             HttpServletResponse response) {
@@ -76,27 +75,15 @@ public class AuthController {
             先取 id_token 作 hint 再删本地会话，清 aiplatform_session cookie 并 302 到
             identity RP-Initiated Logout（清 identity 侧 SSO 会话），identity 按
             post_logout_redirect_uri 白名单 302 回前端首页。前端以 form POST 姿态调用。""")
-    public ResponseEntity<Void> logout(HttpServletRequest request, HttpServletResponse response) {
-        LogoutCompletion completion = appService.logout(
-                cookieValue(request, AuthCookies.SESSION_COOKIE_NAME));
+    public ResponseEntity<Void> logout(
+            @CookieValue(value = AuthCookies.SESSION_COOKIE_NAME, required = false) String sessionId,
+            HttpServletResponse response) {
+        LogoutCompletion completion = appService.logout(sessionId);
         response.addHeader(HttpHeaders.SET_COOKIE, completion.sessionClearCookie().toString());
         return redirect(completion.logoutUrl());
     }
 
     private static ResponseEntity<Void> redirect(String location) {
         return ResponseEntity.status(HttpStatus.FOUND).location(java.net.URI.create(location)).build();
-    }
-
-    private static String cookieValue(HttpServletRequest request, String name) {
-        Cookie[] cookies = request.getCookies();
-        if (cookies == null) {
-            return null;
-        }
-        for (Cookie cookie : cookies) {
-            if (name.equals(cookie.getName())) {
-                return cookie.getValue();
-            }
-        }
-        return null;
     }
 }

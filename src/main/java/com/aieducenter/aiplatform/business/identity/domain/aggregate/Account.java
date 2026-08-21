@@ -1,19 +1,18 @@
 package com.aieducenter.aiplatform.business.identity.domain.aggregate;
 
-import com.cartisan.data.jpa.domain.Auditable;
-import com.cartisan.data.jpa.id.TsidGenerator;
-
-import com.cartisan.core.domain.AggregateRoot;
-import com.cartisan.core.exception.DomainException;
-import com.cartisan.core.stereotype.Aggregate;
-
-import com.aieducenter.aiplatform.business.identity.domain.error.IdentityMessage;
-
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import lombok.Getter;
+
+import com.cartisan.core.domain.AggregateRoot;
+import com.cartisan.core.exception.DomainException;
+import com.cartisan.core.stereotype.Aggregate;
+import com.cartisan.data.jpa.domain.Auditable;
+import com.cartisan.data.jpa.id.TsidGenerator;
+
+import com.aieducenter.aiplatform.business.identity.domain.error.IdentityMessage;
 
 /**
  * 账号聚合根（{@code idn_accounts}，A2 §3 最小版）。

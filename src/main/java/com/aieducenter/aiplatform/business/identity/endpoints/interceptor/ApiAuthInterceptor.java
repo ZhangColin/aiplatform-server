@@ -1,14 +1,14 @@
 package com.aieducenter.aiplatform.business.identity.endpoints.interceptor;
 
-import com.cartisan.core.context.RequestContext;
-
-import org.springframework.web.servlet.HandlerInterceptor;
-
-import com.aieducenter.aiplatform.web.AuthException;
-
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+
+import org.springframework.web.servlet.HandlerInterceptor;
+
+import com.cartisan.core.context.RequestContext;
+
+import com.aieducenter.aiplatform.web.AuthException;
 
 /**
  * {@code /api/**} 鉴权拦截器（A2 §6：全拦截面含 SSE 双通道，无会话 401）。

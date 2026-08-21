@@ -42,7 +42,7 @@ class IdTokenVerifierTest {
 
     private RSAKey identityKey;
     private RSAPrivateKey signingKey;
-    private MutableClock clock;
+    private MutableTestClock clock;
     private IdTokenVerifier verifier;
     private JwksKeySource keySource;
 
@@ -50,7 +50,7 @@ class IdTokenVerifierTest {
     void setUp() throws NoSuchAlgorithmException, JOSEException {
         identityKey = rsaKey(KID);
         signingKey = identityKey.toRSAPrivateKey();
-        clock = new MutableClock(Instant.parse("2026-08-21T10:00:00Z"));
+        clock = new MutableTestClock(Instant.parse("2026-08-21T10:00:00Z"));
         keySource = new JwksKeySource(() -> new JWKSet(identityKey), clock);
         verifier = new IdTokenVerifier(props(), keySource, clock);
     }
@@ -255,38 +255,6 @@ class IdTokenVerifierTest {
 
         int calls() {
             return calls;
-        }
-    }
-
-    /** 可拨动的时钟（exp 容忍与 JWKS 重拉限频语义测试用） */
-    private static final class MutableClock extends Clock {
-        private Instant now;
-
-        private MutableClock(Instant now) {
-            this.now = now;
-        }
-
-        void advanceBySeconds(long seconds) {
-            now = now.plusSeconds(seconds);
-        }
-
-        Instant now() {
-            return now;
-        }
-
-        @Override
-        public ZoneOffset getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(java.time.ZoneId zone) {
-            return this;
-        }
-
-        @Override
-        public Instant instant() {
-            return now;
         }
     }
 }

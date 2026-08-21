@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.aieducenter.aiplatform.business.identity.domain.aggregate.Account;
+import com.aieducenter.aiplatform.business.identity.domain.error.IdentityMessage;
 import com.aieducenter.aiplatform.business.identity.domain.model.AuthCookies;
 import com.aieducenter.aiplatform.business.identity.domain.model.IdTokenClaims;
 import com.aieducenter.aiplatform.business.identity.domain.model.OauthTransaction;
@@ -82,28 +83,31 @@ public class AuthAppService {
         Optional<OauthTransaction> parsed = OauthTransaction.parse(txnCookieValue);
         if (parsed.isEmpty() || stateParam == null
                 || !parsed.get().state().equals(stateParam)) {
-            return new LoginCompletion(properties.getAppBaseUrl() + "/?error=state_mismatch",
-                    null, txnCookie("", 0));
+            return failure("error=state_mismatch");
         }
         OauthTransaction transaction = parsed.get();
+
+        // identity 拒绝授权时回跳只带 error 不带 code——同走 exchange_failed 兜底
+        if (code == null || code.isBlank()) {
+            return failure("error=exchange_failed");
+        }
 
         TokenResponse tokens;
         try {
             tokens = oidcClient.exchangeCode(code);
         } catch (TokenExchangeException e) {
-            log.warn("identity /token 换 token 失败（IDN_003）：status={}, body={}",
+            log.warn("{}：identity /token 换 token 失败，status={}, body={}",
+                    IdentityMessage.TOKEN_EXCHANGE_FAILED.code(),
                     e.httpStatus(), e.responseBody());
-            return new LoginCompletion(properties.getAppBaseUrl() + "/?error=exchange_failed",
-                    null, txnCookie("", 0));
+            return failure("error=exchange_failed");
         }
 
         IdTokenClaims claims;
         try {
             claims = oidcClient.verifyIdToken(tokens.idToken(), transaction.nonce());
         } catch (IdTokenRejectedException e) {
-            log.warn("id_token 校验未通过（IDN_002）：{}", e.getMessage());
-            return new LoginCompletion(properties.getAppBaseUrl() + "/?error=exchange_failed",
-                    null, txnCookie("", 0));
+            log.warn("{}：{}", IdentityMessage.ID_TOKEN_REJECTED.code(), e.getMessage());
+            return failure("error=exchange_failed");
         }
 
         Account account = transactionTemplate.execute(status -> upsertAccount(claims));
@@ -119,6 +123,12 @@ public class AuthAppService {
         return new LoginCompletion(
                 properties.getAppBaseUrl() + transaction.returnTo(),
                 sessionCookie(sessionId).build(), txnCookie("", 0));
+    }
+
+    /** 回调失败统一兜底：回前端错误页 + 清事务 cookie（具体原因已在日志里） */
+    private LoginCompletion failure(String errorQuery) {
+        return new LoginCompletion(properties.getAppBaseUrl() + "/?" + errorQuery,
+                null, txnCookie("", 0));
     }
 
     /**

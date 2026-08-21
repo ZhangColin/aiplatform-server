@@ -173,6 +173,18 @@ class AuthAppServiceTest {
     }
 
     @Test
+    void given_identity_denies_authorization_without_code_when_complete_then_exchange_failed() {
+        // identity 拒绝授权时回跳只带 error 不带 code——不裸 400，同走兜底错误页
+        OauthTransaction txn = OauthTransaction.issue("/");
+
+        LoginCompletion completion = appService.completeLogin(null, txn.state(),
+                txn.cookieValue());
+
+        assertThat(completion.redirectTo()).isEqualTo(APP_BASE + "/?error=exchange_failed");
+        assertThat(completion.sessionCookie()).isNull();
+    }
+
+    @Test
     void given_identity_rejects_code_when_complete_then_exchange_failed() {
         OauthTransaction txn = OauthTransaction.issue("/");
         when(oidcClient.exchangeCode("bad-code")).thenThrow(

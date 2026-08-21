@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class JwksKeySourceTest {
 
-    private final SteadyClock clock = new SteadyClock(Instant.parse("2026-08-21T10:00:00Z"));
+    private final MutableTestClock clock = new MutableTestClock(Instant.parse("2026-08-21T10:00:00Z"));
     private final CountingFetcher fetcher = new CountingFetcher();
 
     @Test
@@ -81,33 +81,6 @@ class JwksKeySourceTest {
             } catch (Exception e) {
                 throw new IllegalStateException(e);
             }
-        }
-    }
-
-    private static final class SteadyClock extends Clock {
-        private Instant now;
-
-        private SteadyClock(Instant now) {
-            this.now = now;
-        }
-
-        void advanceBySeconds(long seconds) {
-            now = now.plusSeconds(seconds);
-        }
-
-        @Override
-        public ZoneOffset getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(java.time.ZoneId zone) {
-            return this;
-        }
-
-        @Override
-        public Instant instant() {
-            return now;
         }
     }
 }
