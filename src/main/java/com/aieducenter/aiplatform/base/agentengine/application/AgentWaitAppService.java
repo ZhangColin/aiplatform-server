@@ -5,6 +5,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -138,6 +140,17 @@ public class AgentWaitAppService {
     @Transactional(readOnly = true)
     public Optional<WaitPointResponse> wait(String waitId) {
         return waitRepository.findById(waitId).map(AgentWaitAppService::toResponse);
+    }
+
+    /**
+     * 有待处理等待点的工作区 id 集（跨项目待办查询面，A2 §60：工作台 GATE/
+     * WAIT 派生与项目列表 pending 过滤共用；纯表读一次取全量，量小不分页）。
+     */
+    @Transactional(readOnly = true)
+    public Set<Long> pendingWorkspaceIds() {
+        return waitRepository.findByStatus(WaitStatus.PENDING).stream()
+                .map(AgentWait::getWorkspaceId)
+                .collect(Collectors.toSet());
     }
 
     /**

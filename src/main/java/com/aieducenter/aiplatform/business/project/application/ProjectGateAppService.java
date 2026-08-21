@@ -12,7 +12,7 @@ import com.aieducenter.aiplatform.base.process.domain.model.ExitGate;
 import com.aieducenter.aiplatform.base.process.domain.model.StageEntry;
 import com.aieducenter.aiplatform.base.process.domain.service.StageAdvanceService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
-import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Confirmation;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
@@ -52,7 +52,7 @@ public class ProjectGateAppService {
     private final StageAdvanceService stageAdvanceService;
     private final OpenBugQueryPort openBugQueryPort;
     private final ProjectAgentTaskAppService agentTaskAppService;
-    private final ProjectLifecycleAppService lifecycleAppService;
+    private final ProjectQueryAppService queryAppService;
     private final PlatformNotificationAppService notificationAppService;
     private final TransactionTemplate transactionTemplate;
 
@@ -62,7 +62,7 @@ public class ProjectGateAppService {
                                  StageAdvanceService stageAdvanceService,
                                  OpenBugQueryPort openBugQueryPort,
                                  ProjectAgentTaskAppService agentTaskAppService,
-                                 ProjectLifecycleAppService lifecycleAppService,
+                                 ProjectQueryAppService queryAppService,
                                  PlatformNotificationAppService notificationAppService,
                                  TransactionTemplate transactionTemplate) {
         this.projectRepository = projectRepository;
@@ -71,7 +71,7 @@ public class ProjectGateAppService {
         this.stageAdvanceService = stageAdvanceService;
         this.openBugQueryPort = openBugQueryPort;
         this.agentTaskAppService = agentTaskAppService;
-        this.lifecycleAppService = lifecycleAppService;
+        this.queryAppService = queryAppService;
         this.notificationAppService = notificationAppService;
         this.transactionTemplate = transactionTemplate;
     }
@@ -84,7 +84,7 @@ public class ProjectGateAppService {
      *                              PRJ_008 G3 谓词不满足（存在未关闭 Bug）；
      *                              PRJ_007 计数门禁不足；PRJ_010 无 OPEN 期
      */
-    public ProjectResponse approve(Long projectId) {
+    public ProjectDetailResponse approve(Long projectId) {
         requireProject(projectId);
         Iteration iteration = openIterationOf(projectId);
         StageEntry current = stageOf(iteration.getStage());
@@ -130,7 +130,7 @@ public class ProjectGateAppService {
                 log.warn("项目 {} 自动 Demo 起跑失败（门通过不回滚）", projectId, e);
             }
         }
-        return lifecycleAppService.get(projectId);
+        return queryAppService.detail(projectId);
     }
 
     /**
@@ -140,7 +140,7 @@ public class ProjectGateAppService {
      * @throws ApplicationException PRJ_001 项目不存在；PRJ_011 reason 空白；
      *                              PRJ_009 当前阶段无确认门；PRJ_010 无 OPEN 期
      */
-    public ProjectResponse reject(Long projectId, String reason) {
+    public ProjectDetailResponse reject(Long projectId, String reason) {
         requireProject(projectId);
         Iteration iteration = openIterationOf(projectId);
         StageEntry current = stageOf(iteration.getStage());
@@ -156,7 +156,7 @@ public class ProjectGateAppService {
 
         notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED,
                 StageChangedPayload.rejected(projectId, iteration.getStage(), reason.strip()));
-        return lifecycleAppService.get(projectId);
+        return queryAppService.detail(projectId);
     }
 
     // ---------- 内部 ----------

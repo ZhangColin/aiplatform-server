@@ -188,6 +188,11 @@ class DshAdapterTest {
         public java.net.URI exposePort(WorkspaceHandle handle, int containerPort) {
             throw new UnsupportedOperationException("测试不触达");
         }
+
+        @Override
+        public byte[] packSource(WorkspaceHandle handle) {
+            throw new UnsupportedOperationException("测试不触达");
+        }
     }
 
     /** Key 解析替身：恒定值（不读环境，测试可复现）。 */

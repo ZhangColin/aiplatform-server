@@ -1,11 +1,8 @@
 package com.aieducenter.aiplatform.business.project.application;
 
 import java.net.URI;
-import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -22,11 +19,10 @@ import com.aieducenter.aiplatform.business.project.application.dto.command.Creat
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
-import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
-import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
 import com.aieducenter.aiplatform.business.project.domain.model.RolePreset;
@@ -44,7 +40,9 @@ import lombok.extern.slf4j.Slf4j;
  * <p>事务形态（照片1b workspace 的形态）：Docker 副作用在业务事务外先行，库记录
  * 收进短事务；落库失败回收已落定的工作区不留孤儿容器。删除真删级联（A3 §4）：
  * 工作区物理销毁（尽力而为，失败不阻断记录删除）→ prj_* 行级联 → SSE
- * workspace-destroyed（编排层发射制：副作用真实落定后，ADR-0001）。</p>
+ * workspace-destroyed（编排层发射制：副作用真实落定后，ADR-0001）。归档与源码包
+ * 下载归本服务（动作与交付物）；读拼装（详情/列表/用量）归
+ * {@link ProjectQueryAppService}。</p>
  */
 @Service
 @Slf4j
@@ -55,6 +53,7 @@ public class ProjectLifecycleAppService {
     private final AgentEngineRegistry engineRegistry;
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
+    private final ProjectQueryAppService queryAppService;
     private final PlatformNotificationAppService notificationAppService;
     private final TransactionTemplate transactionTemplate;
 
@@ -63,6 +62,7 @@ public class ProjectLifecycleAppService {
                                       AgentEngineRegistry engineRegistry,
                                       ProjectRepository projectRepository,
                                       IterationRepository iterationRepository,
+                                      ProjectQueryAppService queryAppService,
                                       PlatformNotificationAppService notificationAppService,
                                       TransactionTemplate transactionTemplate) {
         this.workspaceLifecycleAppService = workspaceLifecycleAppService;
@@ -70,6 +70,7 @@ public class ProjectLifecycleAppService {
         this.engineRegistry = engineRegistry;
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
+        this.queryAppService = queryAppService;
         this.notificationAppService = notificationAppService;
         this.transactionTemplate = transactionTemplate;
     }
@@ -118,28 +119,34 @@ public class ProjectLifecycleAppService {
                     new ProjectAgentTaskCommand(prompt, RolePreset.BA));
         } catch (RuntimeException e) {
             log.warn("项目 {} 自动 BA 起跑失败（项目已成立，不回滚）", project.getId(), e);
-            return new ProjectCreatedResponse(detail(project.getId()), null, false);
+            return new ProjectCreatedResponse(queryAppService.detail(project.getId()), null, false);
         }
-        return new ProjectCreatedResponse(detail(project.getId()), run.runId(), run.accepted());
+        return new ProjectCreatedResponse(queryAppService.detail(project.getId()),
+                run.runId(), run.accepted());
     }
 
     /**
-     * 项目列表（创建时间倒序；期位置/派生状态实时拼装）。
+     * 归档（A3 §4：单向终点——区别于开发中/已交付的派生投影）：落 archived_at，
+     * 不迁移期、不清工作区（工具项目级常开，期后修复照常）。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在；PRJ_013 重复归档（409）
      */
-    public List<ProjectResponse> list() {
-        Map<Long, List<Iteration>> iterationsByProject = iterationRepository.findAll().stream()
-                .collect(Collectors.groupingBy(Iteration::getProjectId));
-        return projectRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
-                .map(project -> toResponse(project, Iteration
-                        .currentOf(iterationsByProject.get(project.getId())).orElse(null)))
-                .toList();
+    public ProjectDetailResponse archive(Long projectId) {
+        Project project = requireProject(projectId);
+        project.archive(); // 单向不变量在聚合（重复归档 DomainException PRJ_013）
+        projectRepository.save(project);
+        return queryAppService.detail(projectId);
     }
 
     /**
-     * 项目详情。
+     * 源码包（A3 §2.2 交付物 = 源码包 + 仓内文档，端点常开）：打包项目 dev 工作区
+     * 为 tar.gz 字节流（排除 .env 机密与 node_modules）；文件名/HTTP 头归 REST 层。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在；工作区故障 WSP_（容器已亡等）
      */
-    public ProjectResponse get(Long projectId) {
-        return detail(projectId);
+    public byte[] sourcePackage(Long projectId) {
+        Project project = requireProject(projectId);
+        return workspaceLifecycleAppService.packSource(Long.toString(project.getWorkspaceId()));
     }
 
     /**
@@ -185,38 +192,6 @@ public class ProjectLifecycleAppService {
         } catch (ApplicationException e) {
             throw new ApplicationException(ProjectMessage.ENGINE_UNKNOWN, engine);
         }
-    }
-
-    private ProjectResponse detail(Long projectId) {
-        Project project = requireProject(projectId);
-        Iteration iteration = Iteration
-                .currentOf(iterationRepository.findByProjectId(projectId)).orElse(null);
-        return toResponse(project, iteration);
-    }
-
-    /** 响应拼装：期位置（stage/标签；收口后为 CLOSED）+ 派生项目状态（有无 OPEN
-     * 期，A3 §1/§5）+ 计数（收口后不展示——计数是门禁输入，过程已结束）。 */
-    private ProjectResponse toResponse(Project project, Iteration iteration) {
-        boolean open = iteration != null && iteration.getStatus() == IterationStatus.OPEN;
-        String stage = iteration != null ? iteration.getStage() : null;
-        String stageLabel = stage != null
-                ? ProjectMainChain.definition().find(stage).map(entry -> entry.label())
-                        .orElse(null)
-                : null;
-        return new ProjectResponse(
-                project.getId().toString(),
-                project.getName(),
-                project.getType(),
-                project.getType().getName(),
-                project.getEngine(),
-                project.getWorkspaceId().toString(),
-                stage,
-                stageLabel,
-                open ? ProjectResponse.STATUS_IN_PROGRESS : ProjectResponse.STATUS_DELIVERED,
-                open ? "开发中" : "已交付",
-                open ? iteration.getStageTaskCount() : null,
-                project.getArchivedAt() != null,
-                project.getCreatedAt());
     }
 
     /** stage-changed 发射（建项目起始段 BA 的编排落位；门决策/DEV→TEST 见各自编排）。 */

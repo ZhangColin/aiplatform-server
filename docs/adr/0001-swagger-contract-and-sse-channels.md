@@ -15,7 +15,7 @@
 ### REST 约定
 
 - 路径 `/api/*`，资源风格（`/api/projects`、`/api/projects/{id}/agent/task`），**无版本段**——前后端同节奏演进，无独立客户端要兼容承诺；破坏性变更时前端同步改，`/api` 前缀留给将来挂 `v2`。
-- 全端点统一 `ApiResponse<T>` / `PageResponse<T>`（cartisan-web）；**成功判定 = HTTP 2xx**，`code/message/errors` 只在错误时有意义，前端不做 `data` 之外的业务判断。
+- 全端点统一 `ApiResponse<T>` / `PageResponse<T>`（cartisan-web）；**成功判定 = HTTP 2xx**，`code/message/errors` 只在错误时有意义，前端不做 `data` 之外的业务判断。**修订（片5c · [票 #24](https://github.com/ZhangColin/aiplatform-server/issues/24)，2026-08-22）**：唯一例外 = 二进制文件下载端点（首例 `GET /api/projects/{id}/source-package`）——JSON 信封装不下文件流，直接返回文件字节（`Content-Type` + `Content-Disposition attachment`），错误路径照常走信封。
 - 错误码 `{CONTEXT}_{NNN}`（编写规范既定），前缀注册表：`WSP_`（base.workspace）/ `AGT_`（base.agentengine）/ `KNW_`（base.knowledge）/ `PRJ_`（business.project），预留 `TASK_` / `METER_` / `IDN_`；通用错误复用 `BaseCodeMessage`，不自造。新 BC 建立即注册前缀。
 - 分页请求响应**统一 1 基**（配置 `OneIndexedParameters`），`sort=field,desc` 可多值，默认 `size=20`——消掉 Spring「请求 0 基 / 响应 1 基」的错位。
 

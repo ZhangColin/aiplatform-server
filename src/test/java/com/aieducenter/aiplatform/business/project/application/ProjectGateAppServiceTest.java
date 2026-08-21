@@ -18,6 +18,7 @@ import com.cartisan.core.exception.CartisanException;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
@@ -98,7 +99,7 @@ class ProjectGateAppServiceTest {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
         stubAutoDispatch("run-demo", ProjectMainChain.STAGE_DEMO);
 
-        ProjectResponse response = asUser(42L, () -> appService.approve(projectId));
+        ProjectDetailResponse response = asUser(42L, () -> appService.approve(projectId));
 
         // 推进 DEMO：计数归零，状态仍开发中
         Iteration iteration = openIteration(projectId);
@@ -137,7 +138,7 @@ class ProjectGateAppServiceTest {
     void given_demo_confirmed_when_approve_then_advance_dev_without_auto_dispatch() {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_DEMO, 1);
 
-        ProjectResponse response = appService.approve(projectId);
+        ProjectDetailResponse response = appService.approve(projectId);
 
         // 开发起全手动（A3 §2.3）：G2 通过不自动发任务
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_DEV);
@@ -178,7 +179,7 @@ class ProjectGateAppServiceTest {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_TEST, 1);
         when(openBugQueryPort.hasOpenBugs(projectId)).thenReturn(false);
 
-        ProjectResponse response = appService.approve(projectId);
+        ProjectDetailResponse response = appService.approve(projectId);
 
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_ACCEPTANCE);
         // G3 过门留痕（kind=开发完成确认）
@@ -191,7 +192,7 @@ class ProjectGateAppServiceTest {
         // 验收门 minTasks=0：无需任务即可拍板（A3 §2.4）
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_ACCEPTANCE, 0);
 
-        ProjectResponse response = appService.approve(projectId);
+        ProjectDetailResponse response = appService.approve(projectId);
 
         // G4 通过即收口（A3 §2.2 无交付段）：期 CLOSED + 项目已交付（派生）
         Iteration iteration = iterationRepository
@@ -240,7 +241,7 @@ class ProjectGateAppServiceTest {
         when(agentTaskAppService.dispatchTask(anyLong(), any()))
                 .thenThrow(new RuntimeException("引擎不可用"));
 
-        ProjectResponse response = appService.approve(projectId);
+        ProjectDetailResponse response = appService.approve(projectId);
 
         // 门决策不因自动 Demo 起跑失败回滚（阶段已推进，留痕已落）
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
@@ -251,7 +252,7 @@ class ProjectGateAppServiceTest {
     void given_reason_when_reject_then_stay_with_confirmation_and_sse_reason() throws Exception {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_ACCEPTANCE, 0);
 
-        ProjectResponse response = asUser(7L, () ->
+        ProjectDetailResponse response = asUser(7L, () ->
                 appService.reject(projectId, " 首页布局与 PRD 不符 "));
 
         // 驳回一律停留当前阶段（验收驳回停留验收段，A3 §3）

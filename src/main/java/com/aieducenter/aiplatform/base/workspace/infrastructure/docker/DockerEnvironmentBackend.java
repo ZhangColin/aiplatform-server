@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
 import org.springframework.stereotype.Component;
@@ -94,6 +95,38 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
     @Override
     public ExecResult exec(WorkspaceHandle handle, String command) {
         return runCapture("docker", "exec", handle.containerName(), "sh", "-c", command);
+    }
+
+    @Override
+    public byte[] packSource(WorkspaceHandle handle) {
+        // 容器内 tar 流式写 stdout（GNU tar，dev 镜像 bookworm 基座自带）：
+        // 相对路径归档（解包得到 ./index.html 而非 /workspace/index.html）；
+        // .env 是平台生成的连接串机密、node_modules 可重建——都不进包
+        String command = "tar czf - --exclude=./.env --exclude=./node_modules -C /workspace .";
+        try {
+            Process p = new ProcessBuilder("docker", "exec", handle.containerName(),
+                    "sh", "-c", command).start();
+            // stderr 异步读：tar 输出静默但异常时可能写满管道缓冲，同步顺序读会死锁
+            CompletableFuture<String> stderr = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new String(p.getErrorStream().readAllBytes());
+                } catch (Exception readFailure) {
+                    return String.valueOf(readFailure.getMessage());
+                }
+            });
+            byte[] stdout = p.getInputStream().readAllBytes();
+            int code = p.waitFor();
+            if (code != 0) {
+                throw new ApplicationException(WorkspaceMessage.ENVIRONMENT_OPERATION_FAILED,
+                        "源码打包失败: " + stderr.join());
+            }
+            return stdout;
+        } catch (ApplicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ApplicationException(WorkspaceMessage.ENVIRONMENT_OPERATION_FAILED,
+                    "源码打包执行失败: " + e.getMessage());
+        }
     }
 
     @Override

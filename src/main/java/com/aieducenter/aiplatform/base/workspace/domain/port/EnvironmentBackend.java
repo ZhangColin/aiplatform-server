@@ -53,4 +53,12 @@ public interface EnvironmentBackend {
      * 暴露容器端口为可访问的预览 URL（本地 = Docker 端口映射；线上 = Ingress/负载均衡）。
      */
     URI exposePort(WorkspaceHandle handle, int containerPort);
+
+    /**
+     * 打包工作区源码为 tar.gz 字节流（「取走工作区内容」的能力面：调用方拿去做
+     * 下载交付，业务语义归调用方）。实现负责排除平台生成的机密
+     * （/workspace/.env 连接串）与可重建的重物（node_modules）——包里是源码
+     * 事实，不是环境镜像。
+     */
+    byte[] packSource(WorkspaceHandle handle);
 }

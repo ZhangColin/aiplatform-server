@@ -4,6 +4,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
@@ -115,6 +117,37 @@ class DockerEnvironmentBackendTest {
     }
 
     @Test
+    @Timeout(PROBE_TIMEOUT_SECONDS)
+    void given_workspace_with_source_when_pack_source_then_real_tarball_without_secrets() throws Exception {
+        requireDockerDaemon();
+        provision = backend.createWorkspace(WorkspaceId.generate(), EnvKind.DEV);
+        // 工作区摆上源码事实 + 平台机密（.env）+ 可重建重物（node_modules）
+        backend.exec(provision.handle(),
+                "echo '<html>demo</html>' > /workspace/index.html"
+                        + " && mkdir -p /workspace/node_modules/leftpad"
+                        + " && echo junk > /workspace/node_modules/leftpad/index.js");
+
+        byte[] tarball = backend.packSource(provision.handle());
+
+        // gzip 魔数（真实 tar.gz，非空壳）
+        assertThat(tarball.length).isGreaterThan(2);
+        assertThat(tarball[0]).isEqualTo((byte) 0x1f);
+        assertThat(tarball[1]).isEqualTo((byte) 0x8b);
+        // 宿主侧解包清单（真实状态为准）：源码在、机密与重物不在
+        Path tar = Files.createTempFile("aiplatform-source", ".tar.gz");
+        String listing;
+        try {
+            Files.write(tar, tarball);
+            listing = hostTarListing(tar);
+        } finally {
+            Files.deleteIfExists(tar);
+        }
+        assertThat(listing).contains("index.html");
+        assertThat(listing).doesNotContain(".env");
+        assertThat(listing).doesNotContain("node_modules");
+    }
+
+    @Test
     void given_non_dev_kind_when_create_then_rejected_before_any_side_effect() {
         // Phase A 仅 DEV（WSP_007）；拒绝发生在任何 docker 交互之前
         assertThatThrownBy(() -> backend.createWorkspace(WorkspaceId.generate(), EnvKind.TEST))
@@ -148,6 +181,14 @@ class DockerEnvironmentBackendTest {
     }
 
     // ---------- 直连 docker CLI 的验证工具（真实状态为准） ----------
+
+    /** 宿主侧 tar 清单（macOS/Linux 自带 tar）：解开包内容做事实核对。 */
+    private static String hostTarListing(Path tarFile) throws Exception {
+        Process p = new ProcessBuilder("tar", "tzf", tarFile.toString()).start();
+        String out = new String(p.getInputStream().readAllBytes());
+        p.waitFor();
+        return out;
+    }
 
     private static ExecResult docker(String... args) {
         String[] cmd = new String[args.length + 1];

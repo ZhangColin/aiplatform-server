@@ -2,12 +2,18 @@ package com.aieducenter.aiplatform.business.project.endpoints.controller;
 
 import java.util.List;
 
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -16,32 +22,45 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.cartisan.web.response.ApiResponse;
 
+import com.aieducenter.aiplatform.business.project.application.ProjectDemandPoolAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectGateAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectLifecycleAppService;
+import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
+import com.aieducenter.aiplatform.business.project.application.dto.command.AddDemandEntryCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.command.StageRejectCommand;
+import com.aieducenter.aiplatform.business.project.application.dto.response.DemandPoolEntryResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
 
 /**
  * 项目主链 REST 面（demo ProjectController 的重写，B0 §2 片5）：对话建项目
  * （选引擎，建即自动跑 BA）→ 下任务 / 答复等待点（ProjectAgentController）→
- * 门操作与收口（approve/reject，A3 §3/§5）→ 预览 → 删除真删级联。
+ * 门操作与收口（approve/reject，A3 §3/§5）→ 需求池 / 归档 / 详情 / 用量 /
+ * 源码包下载（片5c 项目周边，票 #24）→ 预览 → 删除真删级联。
  */
 @RestController
 @RequestMapping("/api/projects")
 @Validated
-@Tag(name = "Projects", description = "项目主链：建项目 / 列表 / 详情 / 门操作 / 预览 / 删除（需求池与归档归片5c）")
+@Tag(name = "Projects", description = "项目主链：建项目 / 列表 / 详情 / 门操作 / 需求池 / 归档 / 用量 / 源码包 / 预览 / 删除")
 public class ProjectController {
 
     private final ProjectLifecycleAppService appService;
     private final ProjectGateAppService gateAppService;
+    private final ProjectQueryAppService queryAppService;
+    private final ProjectDemandPoolAppService demandPoolAppService;
 
     public ProjectController(ProjectLifecycleAppService appService,
-                             ProjectGateAppService gateAppService) {
+                             ProjectGateAppService gateAppService,
+                             ProjectQueryAppService queryAppService,
+                             ProjectDemandPoolAppService demandPoolAppService) {
         this.appService = appService;
         this.gateAppService = gateAppService;
+        this.queryAppService = queryAppService;
+        this.demandPoolAppService = demandPoolAppService;
     }
 
     @PostMapping
@@ -54,15 +73,22 @@ public class ProjectController {
     }
 
     @GetMapping
-    @Operation(summary = "项目列表", description = "创建时间倒序；含期位置与派生状态（开发中/已交付）")
-    public ApiResponse<List<ProjectResponse>> list() {
-        return ApiResponse.ok(appService.list());
+    @Operation(summary = "项目列表（状态过滤）",
+            description = "创建时间倒序。status 过滤：active（进行中）/ pending（存在 dev 待办：门就绪或"
+                    + "等待点待处理）/ archived（已归档）；缺省 all。不合法取值 400 PRJ_014")
+    public ApiResponse<List<ProjectResponse>> list(
+            @RequestParam(required = false) String status) {
+        return ApiResponse.ok(queryAppService.list(status));
     }
 
     @GetMapping("/{id}")
-    @Operation(summary = "项目详情", description = "期位置（阶段/标签/计数）+ 派生项目状态；主链定义数据与门就绪归项目详情扩展（票 #24）")
-    public ApiResponse<ProjectResponse> get(@PathVariable String id) {
-        return ApiResponse.ok(appService.get(parseId(id)));
+    @Operation(summary = "项目详情（期位置 + 主链定义数据 + 门就绪 + 派生状态）",
+            description = "前端渲染进度条与点亮按钮的全部数据面（A3 §5）：stages = 阶段序列"
+                    + "（主链定义数据，过程演化 UI 少改）；gate = {actor, ready}（计数门禁 ∧"
+                    + "业务谓词，无门段/已收口为 null）；status = IN_PROGRESS/DELIVERED/ARCHIVED"
+                    + "（有无 OPEN 期的派生投影，归档优先）")
+    public ApiResponse<ProjectDetailResponse> get(@PathVariable String id) {
+        return ApiResponse.ok(queryAppService.detail(parseId(id)));
     }
 
     @PostMapping("/{id}/stage/approve")
@@ -72,7 +98,7 @@ public class ProjectController {
                     + "无未关闭 Bug），不足 409 PRJ_007/PRJ_008；无门段 409 PRJ_009；无 OPEN 期 409 PRJ_010。"
                     + "需求确认（G1）通过自动跑 Demo；验收（G4）通过即收口：期 CLOSED、项目已交付。"
                     + "SSE：stage-changed(approved=true)")
-    public ApiResponse<ProjectResponse> approve(@PathVariable String id) {
+    public ApiResponse<ProjectDetailResponse> approve(@PathVariable String id) {
         return ApiResponse.ok(gateAppService.approve(parseId(id)));
     }
 
@@ -81,9 +107,56 @@ public class ProjectController {
             description = "reason 必填（驳回反馈是前端展示与纪要来源）。驳回不迁移阶段——"
                     + "验收驳回停留验收段，开发平台照常下修复任务，用户再验收（A3 §3）；"
                     + "留痕落 prj_confirmations（decision=驳回）。SSE：stage-changed(rejected=true, reason)")
-    public ApiResponse<ProjectResponse> reject(@PathVariable String id,
-                                               @Valid @RequestBody StageRejectCommand command) {
+    public ApiResponse<ProjectDetailResponse> reject(@PathVariable String id,
+                                                     @Valid @RequestBody StageRejectCommand command) {
         return ApiResponse.ok(gateAppService.reject(parseId(id), command.reason()));
+    }
+
+    @PostMapping("/{id}/demand-pool")
+    @Operation(summary = "需求池入池（随时可记）",
+            description = "项目级收件清单（A3 §4）：验收前后、期开期关都能记；kind 可空"
+                    + "（收件时不强分类），source 缺省用户；入池是显式动作（驳回反馈不自动入池）。"
+                    + "开新期时作为需求梳理输入")
+    public ApiResponse<DemandPoolEntryResponse> addDemandEntry(
+            @PathVariable String id, @Valid @RequestBody AddDemandEntryCommand command) {
+        return ApiResponse.ok(demandPoolAppService.add(parseId(id), command));
+    }
+
+    @GetMapping("/{id}/demand-pool")
+    @Operation(summary = "需求池清单（新→旧）", description = "项目的收件清单时间线，记录时间倒序")
+    public ApiResponse<List<DemandPoolEntryResponse>> demandEntries(@PathVariable String id) {
+        return ApiResponse.ok(demandPoolAppService.entries(parseId(id)));
+    }
+
+    @PostMapping("/{id}/archive")
+    @Operation(summary = "归档（单向终点）",
+            description = "落 archived_at（A3 §4）：区别于开发中/已交付的派生投影——归档是真实动作，"
+                    + "重复归档 409 PRJ_013。归档不迁移期、不清工作区（工具项目级常开）")
+    public ApiResponse<ProjectDetailResponse> archive(@PathVariable String id) {
+        return ApiResponse.ok(appService.archive(parseId(id)));
+    }
+
+    @GetMapping("/{id}/usage")
+    @Operation(summary = "项目用量（基础版：总量 + 分模型 + 分角色）",
+            description = "经计量查询端口按 subject=projectId 聚合（A1 §2.5），度量单位 token；"
+                    + "金额（平台成本）与按期聚合随 A6 扩展（票 #29）")
+    public ApiResponse<ProjectUsageResponse> usage(@PathVariable String id) {
+        return ApiResponse.ok(queryAppService.usage(parseId(id)));
+    }
+
+    @GetMapping("/{id}/source-package")
+    @Operation(summary = "源码包下载（常开）",
+            description = "交付物 = 源码包 + 仓内文档（A3 §2.2）：打包项目 dev 工作区为 tar.gz"
+                    + "（排除 .env 机密与 node_modules）。响应为二进制文件流"
+                    + "（application/gzip，本端点不走 ApiResponse JSON 信封）")
+    public ResponseEntity<ByteArrayResource> sourcePackage(@PathVariable String id) {
+        Long projectId = parseId(id);
+        byte[] bytes = appService.sourcePackage(projectId);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType("application/gzip"));
+        headers.setContentDisposition(ContentDisposition.attachment()
+                .filename(projectId + "-source.tar.gz").build());
+        return ResponseEntity.ok().headers(headers).body(new ByteArrayResource(bytes));
     }
 
     @GetMapping("/{id}/preview")

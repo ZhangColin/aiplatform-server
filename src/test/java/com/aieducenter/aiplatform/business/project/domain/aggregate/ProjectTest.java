@@ -51,4 +51,23 @@ class ProjectTest {
                 .isInstanceOf(DomainException.class)
                 .hasMessageContaining(ProjectMessage.PROJECT_FIELDS_INCOMPLETE.message());
     }
+
+    @Test
+    void given_unarchived_when_archive_then_archived_at_set() {
+        Project project = Project.create("官网 demo", ProjectType.WEBSITE, "opencode", 1L, null);
+
+        project.archive();
+
+        assertThat(project.getArchivedAt()).isNotNull(); // 单向终点落定
+    }
+
+    @Test
+    void given_archived_when_archive_again_then_domain_error() {
+        Project project = Project.create("官网 demo", ProjectType.WEBSITE, "opencode", 1L, null);
+        project.archive();
+
+        assertThatThrownBy(project::archive)
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_ALREADY_ARCHIVED.message());
+    }
 }

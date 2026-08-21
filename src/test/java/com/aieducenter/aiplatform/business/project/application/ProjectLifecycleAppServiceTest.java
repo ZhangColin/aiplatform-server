@@ -15,6 +15,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.cartisan.core.exception.ApplicationException;
+import com.cartisan.core.exception.CartisanException;
+import com.cartisan.core.exception.DomainException;
 
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
@@ -25,6 +27,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.command.Creat
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
@@ -181,25 +184,58 @@ class ProjectLifecycleAppServiceTest {
     }
 
     @Test
-    void given_projects_when_list_then_desc_order_with_derived_status() {
-        Project first =
-                projectRepository.save(Project
-                        .create("老项目", ProjectType.WEBSITE, "opencode", 1L, null));
-        iterationRepository.save(Iteration.open(first.getId(), 1,
-                ProjectMainChain.STAGE_BA));
-        projectRepository.save(Project
-                .create("新项目（无期）", ProjectType.ECOMMERCE, "dsh", 2L, null));
+    void given_unarchived_when_archive_then_archived_at_set_and_derived_archived() {
+        Long projectId = persistedProjectWithIteration("9400");
 
-        List<ProjectResponse> list = appService.list();
+        ProjectDetailResponse response = appService.archive(projectId);
 
-        // 有 OPEN 期 = 开发中；无 = 已交付（派生投影，A3 §1）
-        assertThat(list).extracting(ProjectResponse::name)
-                .containsExactly("新项目（无期）", "老项目");
-        assertThat(list).extracting(ProjectResponse::status)
-                .containsExactly(ProjectResponse.STATUS_DELIVERED,
-                        ProjectResponse.STATUS_IN_PROGRESS);
-        assertThat(list).extracting(ProjectResponse::stageLabel)
-                .containsExactly(null, "需求梳理");
+        // 单向终点落定：archived_at 入库，派生状态归档优先（A3 §4 三态）
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT archived_at FROM prj_projects WHERE id = ?", java.sql.Timestamp.class,
+                projectId)).isNotNull();
+        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_ARCHIVED);
+        assertThat(response.statusLabel()).isEqualTo("已归档");
+        assertThat(response.archived()).isTrue();
+        // 归档不清期不清工作区（工具项目级常开）
+        assertThat(iterationRepository.findByProjectId(projectId)).hasSize(1);
+        verify(workspaceLifecycleAppService, never()).destroy(anyString());
+    }
+
+    @Test
+    void given_archived_when_archive_again_then_prj_013() {
+        Long projectId = persistedProjectWithIteration("9401");
+        appService.archive(projectId);
+
+        // 聚合不变量抛 DomainException（CartisanException 统一映射 409，同 reject 兜底口径）
+        assertThatThrownBy(() -> appService.archive(projectId))
+                .isInstanceOf(CartisanException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_ALREADY_ARCHIVED.message());
+    }
+
+    @Test
+    void given_missing_project_when_archive_then_prj_001() {
+        assertThatThrownBy(() -> appService.archive(-1L))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
+    @Test
+    void given_workspace_when_source_package_then_bytes_returned() {
+        Long projectId = persistedProjectWithIteration("9500");
+        byte[] tarball = {0x1f, (byte) 0x8b, 0x08};
+        when(workspaceLifecycleAppService.packSource("9500")).thenReturn(tarball);
+
+        byte[] bytes = appService.sourcePackage(projectId);
+
+        // 交付物字节流来自项目 dev 工作区（文件名/HTTP 头归 REST 层）
+        assertThat(bytes).containsExactly(tarball);
+    }
+
+    @Test
+    void given_missing_project_when_source_package_then_prj_001() {
+        assertThatThrownBy(() -> appService.sourcePackage(-1L))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
     }
 
     @Test
@@ -250,24 +286,6 @@ class ProjectLifecycleAppServiceTest {
         // SSE preview-ready（projectId + url，A1 §4 口子④的业务呈现）
         verify(notificationAppService).publish(eq(ProjectEventTypes.PREVIEW_READY),
                 eq(Map.of("projectId", projectId.toString(), "url", "http://localhost:30080")));
-    }
-
-    @Test
-    void given_closed_iteration_when_get_then_stage_closed_and_delivered() {
-        Project project = projectRepository.save(Project
-                .create("已收口项目", ProjectType.WEBSITE, "opencode", 9302L, null));
-        Iteration iteration = iterationRepository.save(Iteration.open(project.getId(),
-                Iteration.FIRST_SEQ, ProjectMainChain.STAGE_ACCEPTANCE));
-        iteration.close(ProjectMainChain.STAGE_CLOSED);
-        iterationRepository.save(iteration);
-
-        ProjectResponse response = appService.get(project.getId());
-
-        // 收口后的期位置回溯（A3 §5）：stage=CLOSED，派生已交付
-        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_CLOSED);
-        assertThat(response.stageLabel()).isEqualTo("关闭");
-        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_DELIVERED);
-        assertThat(response.stageTaskCount()).isNull();
     }
 
     // ---------- 测试数据 ----------

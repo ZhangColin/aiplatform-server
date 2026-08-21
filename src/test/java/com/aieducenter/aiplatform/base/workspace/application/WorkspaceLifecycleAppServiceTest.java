@@ -196,6 +196,28 @@ class WorkspaceLifecycleAppServiceTest {
     }
 
     @Test
+    void given_seeded_workspace_when_pack_source_then_bytes_from_backend_handle_rebuilt() {
+        workspaceRepository.save(Workspace.register(devProvision("105")));
+        byte[] tarball = {0x1f, (byte) 0x8b, 0x08};
+        when(environmentBackend.packSource(any(WorkspaceHandle.class))).thenReturn(tarball);
+
+        byte[] bytes = appService.packSource("105");
+
+        // 源码包字节透传后端（真容器打包链路在 DockerEnvironmentBackendTest）
+        assertThat(bytes).containsExactly(tarball);
+        ArgumentCaptor<WorkspaceHandle> handle = ArgumentCaptor.forClass(WorkspaceHandle.class);
+        verify(environmentBackend).packSource(handle.capture());
+        assertThat(handle.getValue().containerName()).isEqualTo("ws-100-dev");
+    }
+
+    @Test
+    void given_unknown_workspace_when_pack_source_then_not_found() {
+        assertThatThrownBy(() -> appService.packSource("404"))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining("工作区不存在");
+    }
+
+    @Test
     void given_seeded_workspace_when_expose_preview_then_url_and_ready_event_after_commit() {
         workspaceRepository.save(Workspace.register(devProvision("104")));
         when(environmentBackend.exposePort(any(), eq(8081)))

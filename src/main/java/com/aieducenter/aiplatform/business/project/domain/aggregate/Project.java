@@ -86,6 +86,18 @@ public class Project extends Auditable implements AggregateRoot<Project, Long> {
         return new Project(name, type, engine, workspaceId, ownerAccountId);
     }
 
+    /**
+     * 归档（A3 §4：单向终点——「收起来不再活跃」的真实动作，区别于开发中/已交付
+     * 的派生投影）。重复归档拒绝（409 PRJ_013）；归档不迁移期、不清工作区
+     * （工具项目级常开，期后修复照常）。
+     */
+    public void archive() {
+        if (archivedAt != null) {
+            throw new DomainException(ProjectMessage.PROJECT_ALREADY_ARCHIVED);
+        }
+        this.archivedAt = LocalDateTime.now();
+    }
+
     @PrePersist
     void prePersist() {
         if (id == null) {

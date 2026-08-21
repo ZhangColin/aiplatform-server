@@ -16,17 +16,28 @@ import org.springframework.test.web.servlet.ResultActions;
 
 import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
+import com.cartisan.core.exception.DomainException;
 import com.cartisan.web.exception.GlobalExceptionHandler;
 
+import com.aieducenter.aiplatform.base.metering.domain.model.TokenUsage;
+import com.aieducenter.aiplatform.business.project.application.ProjectDemandPoolAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectGateAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectLifecycleAppService;
-import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
+import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
+import com.aieducenter.aiplatform.business.project.application.dto.command.AddDemandEntryCommand;
+import com.aieducenter.aiplatform.business.project.application.dto.response.DemandPoolEntryResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
+import com.aieducenter.aiplatform.business.project.domain.enums.DemandEntryKind;
+import com.aieducenter.aiplatform.business.project.domain.enums.DemandSource;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -36,12 +47,14 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * 项目 REST 面（swagger 契约验收）：ApiResponse 信封、建项目响应携带自动 BA
- * runId、类型 Integer code 双向、PRJ_001 → 404、参数校验。
+ * runId、类型 Integer code 双向、PRJ_001 → 404、参数校验；片5c 端点（需求池/
+ * 归档/用量/源码包/列表过滤）的契约面。
  */
 @WebMvcTest(ProjectController.class)
 @Import({ProjectControllerTest.ExceptionAdviceConfig.class,
@@ -57,6 +70,12 @@ class ProjectControllerTest {
     @MockitoBean
     private ProjectGateAppService gateAppService;
 
+    @MockitoBean
+    private ProjectQueryAppService queryAppService;
+
+    @MockitoBean
+    private ProjectDemandPoolAppService demandPoolAppService;
+
     /** A2 起全 /api/** 拦截——MVC 契约测试不走登录链，夹具直接注 RequestContext。 */
     private ResultActions performAsUser(RequestBuilder request) throws Exception {
         return RequestContext.runFor(
@@ -66,11 +85,9 @@ class ProjectControllerTest {
 
     @Test
     void given_valid_command_when_create_then_wrapped_with_ba_run() throws Exception {
-        when(appService.create(any(CreateProjectCommand.class))).thenReturn(
-                new ProjectCreatedResponse(new ProjectResponse("100", "官网 demo",
-                        ProjectType.WEBSITE, "官网", "opencode", "900", "BA", "需求梳理",
-                        ProjectResponse.STATUS_IN_PROGRESS, "开发中", 0, false,
-                        LocalDateTime.of(2026, 8, 22, 10, 0)), "run-1", true));
+        when(appService.create(any())).thenReturn(
+                new ProjectCreatedResponse(detailOf("100", ProjectResponse.STATUS_IN_PROGRESS,
+                        "开发中", "BA", 0, false), "run-1", true));
 
         performAsUser(post("/api/projects")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -97,7 +114,7 @@ class ProjectControllerTest {
 
     @Test
     void given_projects_when_list_then_wrapped_array() throws Exception {
-        when(appService.list()).thenReturn(List.of(new ProjectResponse("100", "官网",
+        when(queryAppService.list(null)).thenReturn(List.of(new ProjectResponse("100", "官网",
                 ProjectType.WEBSITE, "官网", "opencode", "900", null, null,
                 ProjectResponse.STATUS_DELIVERED, "已交付", null, false, null)));
 
@@ -108,8 +125,52 @@ class ProjectControllerTest {
     }
 
     @Test
+    void given_status_filter_when_list_then_passed_through() throws Exception {
+        when(queryAppService.list("active")).thenReturn(List.of());
+
+        performAsUser(get("/api/projects").param("status", "active"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").isEmpty());
+        verify(queryAppService).list("active");
+    }
+
+    @Test
+    void given_unknown_filter_when_list_then_prj_014_as_400() throws Exception {
+        when(queryAppService.list("bogus"))
+                .thenThrow(new ApplicationException(ProjectMessage.PROJECT_FILTER_UNKNOWN));
+
+        performAsUser(get("/api/projects").param("status", "bogus"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("无效的项目列表状态过滤参数"));
+    }
+
+    @Test
+    void given_detail_when_get_then_stages_and_gate_returned() throws Exception {
+        when(queryAppService.detail(100L)).thenReturn(
+                new ProjectDetailResponse("100", "官网 demo", ProjectType.WEBSITE, "官网",
+                        "opencode", "900", "BA", "需求梳理",
+                        ProjectResponse.STATUS_IN_PROGRESS, "开发中", 0, false,
+                        LocalDateTime.of(2026, 8, 22, 10, 0),
+                        List.of(new ProjectDetailResponse.StageView("BA", "需求梳理", "BA",
+                                "USER", false),
+                                new ProjectDetailResponse.StageView("CLOSED", "关闭", null,
+                                        null, true)),
+                        new ProjectDetailResponse.GateView("USER", false)));
+
+        performAsUser(get("/api/projects/100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stage").value("BA"))
+                .andExpect(jsonPath("$.data.stages[0].name").value("BA"))
+                .andExpect(jsonPath("$.data.stages[0].terminal").value(false))
+                .andExpect(jsonPath("$.data.stages[1].terminal").value(true))
+                .andExpect(jsonPath("$.data.gate.actor").value("USER"))
+                .andExpect(jsonPath("$.data.gate.ready").value(false));
+    }
+
+    @Test
     void given_unknown_project_when_get_then_prj_001_mapped_to_404() throws Exception {
-        when(appService.get(404L))
+        when(queryAppService.detail(404L))
                 .thenThrow(new ApplicationException(ProjectMessage.PROJECT_NOT_FOUND));
 
         performAsUser(get("/api/projects/404"))
@@ -134,10 +195,8 @@ class ProjectControllerTest {
 
     @Test
     void given_gate_ready_when_approve_then_advanced_project_returned() throws Exception {
-        when(gateAppService.approve(100L)).thenReturn(new ProjectResponse("100", "官网 demo",
-                ProjectType.WEBSITE, "官网", "opencode", "900", "DEMO", "Demo",
-                ProjectResponse.STATUS_IN_PROGRESS, "开发中", 0, false,
-                LocalDateTime.of(2026, 8, 22, 11, 0)));
+        when(gateAppService.approve(100L)).thenReturn(
+                detailOf("100", ProjectResponse.STATUS_IN_PROGRESS, "开发中", "DEMO", 0, false));
 
         performAsUser(post("/api/projects/100/stage/approve"))
                 .andExpect(status().isOk())
@@ -160,9 +219,8 @@ class ProjectControllerTest {
     @Test
     void given_reason_when_reject_then_passed_through() throws Exception {
         when(gateAppService.reject(eq(100L), argThat("布局不对"::equals)))
-                .thenReturn(new ProjectResponse("100", "官网 demo", ProjectType.WEBSITE,
-                        "官网", "opencode", "900", "BA", "需求梳理",
-                        ProjectResponse.STATUS_IN_PROGRESS, "开发中", 1, false, null));
+                .thenReturn(detailOf("100", ProjectResponse.STATUS_IN_PROGRESS, "开发中",
+                        "BA", 1, false));
 
         performAsUser(post("/api/projects/100/stage/reject")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -181,6 +239,105 @@ class ProjectControllerTest {
     }
 
     @Test
+    void given_entry_when_add_demand_then_wrapped() throws Exception {
+        when(demandPoolAppService.add(eq(100L), any(AddDemandEntryCommand.class))).thenReturn(
+                new DemandPoolEntryResponse("700", "支持暗黑模式", DemandEntryKind.REQUIREMENT,
+                        "需求", DemandSource.USER, "用户", 1L,
+                        LocalDateTime.of(2026, 8, 22, 12, 0)));
+
+        performAsUser(post("/api/projects/100/demand-pool")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"content\":\"支持暗黑模式\",\"kind\":1}")) // BaseEnum → Integer code 双向
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content").value("支持暗黑模式"))
+                .andExpect(jsonPath("$.data.kind").value(1))
+                .andExpect(jsonPath("$.data.kindName").value("需求"))
+                .andExpect(jsonPath("$.data.source").value(1))
+                .andExpect(jsonPath("$.data.sourceName").value("用户"));
+        verify(demandPoolAppService).add(eq(100L), argThat(cmd ->
+                "支持暗黑模式".equals(cmd.content()) && cmd.kind() == DemandEntryKind.REQUIREMENT
+                        && cmd.source() == null));
+    }
+
+    @Test
+    void given_blank_content_when_add_demand_then_rejected_as_400() throws Exception {
+        performAsUser(post("/api/projects/100/demand-pool")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"content\":\" \"}"))
+                .andExpect(status().isBadRequest());
+        verify(demandPoolAppService, never()).add(any(), any());
+    }
+
+    @Test
+    void given_entries_when_list_demand_then_wrapped_array_new_first() throws Exception {
+        when(demandPoolAppService.entries(100L)).thenReturn(List.of(
+                new DemandPoolEntryResponse("701", "第二条", null, null, DemandSource.TEST,
+                        "测试", null, LocalDateTime.of(2026, 8, 22, 12, 1)),
+                new DemandPoolEntryResponse("700", "第一条", DemandEntryKind.BUG, "缺陷",
+                        DemandSource.USER, "用户", 1L, LocalDateTime.of(2026, 8, 22, 12, 0))));
+
+        performAsUser(get("/api/projects/100/demand-pool"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].content").value("第二条"))
+                .andExpect(jsonPath("$.data[0].kind").value(nullValue())) // 未分类条目 kind=null
+                .andExpect(jsonPath("$.data[1].kind").value(2));
+    }
+
+    @Test
+    void given_unarchived_when_archive_then_detail_returned() throws Exception {
+        when(appService.archive(100L)).thenReturn(
+                detailOf("100", ProjectResponse.STATUS_ARCHIVED, "已归档", "BA", 1, true));
+
+        performAsUser(post("/api/projects/100/archive"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("ARCHIVED"))
+                .andExpect(jsonPath("$.data.archived").value(true));
+    }
+
+    @Test
+    void given_already_archived_when_archive_again_then_prj_013_as_409() throws Exception {
+        // 真实路径是聚合不变量的 DomainException（CartisanException 统一按 CodeMessage 映射 409）
+        when(appService.archive(100L)).thenThrow(
+                new DomainException(ProjectMessage.PROJECT_ALREADY_ARCHIVED));
+
+        performAsUser(post("/api/projects/100/archive"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(409))
+                .andExpect(jsonPath("$.message").value("项目已归档（归档是单向终点）"));
+    }
+
+    @Test
+    void given_usage_when_get_then_aggregations_returned() throws Exception {
+        TokenUsage tokens = new TokenUsage(100, 200, 30, 0, 0);
+        when(queryAppService.usage(100L)).thenReturn(new ProjectUsageResponse("100", tokens,
+                List.of(new ProjectUsageResponse.ModelUsage("deepseek", "deepseek-v4-pro",
+                        tokens)),
+                List.of(new ProjectUsageResponse.RoleUsage("BA", "需求分析师", tokens))));
+
+        performAsUser(get("/api/projects/100/usage"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.projectId").value("100"))
+                .andExpect(jsonPath("$.data.total.input").value(100))
+                .andExpect(jsonPath("$.data.byModel[0].model").value("deepseek-v4-pro"))
+                .andExpect(jsonPath("$.data.byRole[0].role").value("BA"))
+                .andExpect(jsonPath("$.data.byRole[0].roleLabel").value("需求分析师"));
+    }
+
+    @Test
+    void given_workspace_when_source_package_then_binary_file_returned() throws Exception {
+        byte[] bytes = {0x1f, (byte) 0x8b, 0x08, 0x00, 0x74, 0x61, 0x72};
+        when(appService.sourcePackage(100L)).thenReturn(bytes);
+
+        byte[] body = performAsUser(get("/api/projects/100/source-package"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("application/gzip"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertThat(body).containsExactly(bytes); // 真实文件字节（不走 JSON 信封）
+    }
+
+    @Test
     void given_project_when_preview_then_url_returned() throws Exception {
         when(appService.preview(100L)).thenReturn(new ProjectPreviewResponse(
                 "http://localhost:30080"));
@@ -188,6 +345,16 @@ class ProjectControllerTest {
         performAsUser(get("/api/projects/100/preview"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.url").value("http://localhost:30080"));
+    }
+
+    // ---------- 夹具 ----------
+
+    /** 详情夹具（列表字段 + 主链定义 + 门就绪的最小可用形态）。 */
+    private ProjectDetailResponse detailOf(String id, String status, String statusLabel,
+                                           String stage, Integer taskCount, boolean archived) {
+        return new ProjectDetailResponse(id, "官网 demo", ProjectType.WEBSITE, "官网",
+                "opencode", "900", stage, stage, status, statusLabel, taskCount, archived,
+                LocalDateTime.of(2026, 8, 22, 10, 0), List.of(), null);
     }
 
     /**

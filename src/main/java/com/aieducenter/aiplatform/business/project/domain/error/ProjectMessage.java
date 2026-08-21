@@ -27,7 +27,13 @@ public enum ProjectMessage implements CodeMessage {
 
     ITERATION_NOT_OPEN(409, "PRJ_010", "项目无进行中的期（主链已收口或未初始化）"),
 
-    REJECT_REASON_REQUIRED(400, "PRJ_011", "驳回理由必填");
+    REJECT_REASON_REQUIRED(400, "PRJ_011", "驳回理由必填"),
+
+    DEMAND_CONTENT_BLANK(400, "PRJ_012", "需求池内容不能为空白"),
+
+    PROJECT_ALREADY_ARCHIVED(409, "PRJ_013", "项目已归档（归档是单向终点）"),
+
+    PROJECT_FILTER_UNKNOWN(400, "PRJ_014", "无效的项目列表状态过滤参数");
 
     private final int httpStatus;
     private final String code;

@@ -37,7 +37,8 @@ public record ProjectResponse(
         LocalDateTime createdAt
 ) {
 
-    /** 派生项目状态（A3 §1/§4：有无 OPEN 期的投影，不落库）。 */
+    /** 派生项目状态（A3 §1/§4：有无 OPEN 期的投影；归档是真实动作，优先于派生）。 */
     public static final String STATUS_IN_PROGRESS = "IN_PROGRESS";
     public static final String STATUS_DELIVERED = "DELIVERED";
+    public static final String STATUS_ARCHIVED = "ARCHIVED";
 }

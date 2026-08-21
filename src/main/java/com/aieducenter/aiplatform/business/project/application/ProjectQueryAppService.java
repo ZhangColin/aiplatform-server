@@ -1,0 +1,243 @@
+package com.aieducenter.aiplatform.business.project.application;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+
+import com.cartisan.core.exception.ApplicationException;
+
+import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppService;
+import com.aieducenter.aiplatform.base.metering.domain.model.UsageSummary;
+import com.aieducenter.aiplatform.base.metering.domain.port.UsageQueryPort;
+import com.aieducenter.aiplatform.base.process.domain.model.ExitGate;
+import com.aieducenter.aiplatform.base.process.domain.model.StageEntry;
+import com.aieducenter.aiplatform.base.process.domain.service.StageAdvanceService;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
+import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
+import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
+import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
+import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
+import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
+import com.aieducenter.aiplatform.business.project.domain.model.RolePreset;
+import com.aieducenter.aiplatform.business.project.domain.port.OpenBugQueryPort;
+import com.aieducenter.aiplatform.business.project.domain.repository.IterationRepository;
+import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepository;
+
+/**
+ * 项目读侧用例（片5c，A3 §5 / A1 §2.5）：详情（期位置 + 主链定义数据 + 门就绪 +
+ * 派生状态）、列表（状态过滤 active/pending/archived/缺省 all）、用量（总量 +
+ * 分模型 + 分角色）。写侧（生命周期/门操作/需求池）各自成服务，读拼装集中一处——
+ * 门就绪的裁决（计数 ∧ 业务谓词）与列表 pending 派生（期门就绪 ∨ 工作区待处理
+ * 等待点，A2 §63）同源，避免两处口径漂移。
+ */
+@Service
+public class ProjectQueryAppService {
+
+    /** 列表状态过滤的合法取值（A2 §63 + A3 §4 补 archived；缺省 all）。 */
+    private static final String FILTER_ACTIVE = "active";
+    private static final String FILTER_PENDING = "pending";
+    private static final String FILTER_ARCHIVED = "archived";
+
+    /** 任务下发时记入 dims 的角色维度键（与 ProjectAgentTaskAppService 对齐）。 */
+    private static final String DIM_ROLE = "role";
+
+    private final ProjectRepository projectRepository;
+    private final IterationRepository iterationRepository;
+    private final StageAdvanceService stageAdvanceService;
+    private final OpenBugQueryPort openBugQueryPort;
+    private final AgentWaitAppService agentWaitAppService;
+    private final UsageQueryPort usageQueryPort;
+
+    public ProjectQueryAppService(ProjectRepository projectRepository,
+                                  IterationRepository iterationRepository,
+                                  StageAdvanceService stageAdvanceService,
+                                  OpenBugQueryPort openBugQueryPort,
+                                  AgentWaitAppService agentWaitAppService,
+                                  UsageQueryPort usageQueryPort) {
+        this.projectRepository = projectRepository;
+        this.iterationRepository = iterationRepository;
+        this.stageAdvanceService = stageAdvanceService;
+        this.openBugQueryPort = openBugQueryPort;
+        this.agentWaitAppService = agentWaitAppService;
+        this.usageQueryPort = usageQueryPort;
+    }
+
+    /**
+     * 项目详情（A3 §5：期位置 + 主链定义数据 + 门就绪 + 派生状态——足够前端
+     * 渲染进度条与点亮按钮）。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在
+     */
+    public ProjectDetailResponse detail(Long projectId) {
+        Project project = requireProject(projectId);
+        Iteration iteration = Iteration
+                .currentOf(iterationRepository.findByProjectId(projectId)).orElse(null);
+        return toDetail(project, iteration, gateView(projectId, iteration));
+    }
+
+    /**
+     * 项目列表（创建时间倒序）+ 状态过滤：{@code active}（未归档 ∧ 有 OPEN 期）、
+     * {@code pending}（未归档 ∧ 存在 dev 待办：期门就绪 ∨ 工作区待处理等待点）、
+     * {@code archived}（已归档）；缺省 all。
+     *
+     * @throws ApplicationException PRJ_014 过滤参数不合法
+     */
+    public List<ProjectResponse> list(String status) {
+        String filter = normalizeFilter(status);
+        // pending 一次取全量待处理工作区（跨项目待办查询面，A2 §60），不在循环里逐项目查
+        Set<Long> pendingWorkspaces = FILTER_PENDING.equals(filter)
+                ? agentWaitAppService.pendingWorkspaceIds()
+                : Set.of();
+        Map<Long, List<Iteration>> iterationsByProject = iterationRepository.findAll().stream()
+                .collect(Collectors.groupingBy(Iteration::getProjectId));
+        return projectRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
+                .filter(project -> matches(project, iterationsByProject.get(project.getId()),
+                        filter, pendingWorkspaces))
+                .map(project -> toResponse(project, Iteration
+                        .currentOf(iterationsByProject.get(project.getId())).orElse(null)))
+                .toList();
+    }
+
+    /**
+     * 项目用量（A1 §2.5 基础版）：经计量查询端口按 subject=projectId 聚合——
+     * 总量 + 分模型 + 分角色（dims.role 维度过滤）；cost 与按期聚合随 A6 扩展。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在
+     */
+    public ProjectUsageResponse usage(Long projectId) {
+        requireProject(projectId);
+        UsageSummary summary = usageQueryPort.bySubject(Long.toString(projectId), null, null);
+        List<ProjectUsageResponse.ModelUsage> byModel = summary.byModel().stream()
+                .map(model -> new ProjectUsageResponse.ModelUsage(
+                        model.provider(), model.model(), model.tokens()))
+                .toList();
+        List<ProjectUsageResponse.RoleUsage> byRole = summary.byDims().stream()
+                .filter(dim -> DIM_ROLE.equals(dim.dimKey()))
+                .map(dim -> new ProjectUsageResponse.RoleUsage(dim.dimValue(),
+                        RolePreset.byName(dim.dimValue()).map(RolePreset::getName).orElse(null),
+                        dim.tokens()))
+                .toList();
+        return new ProjectUsageResponse(Long.toString(projectId), summary.total(),
+                byModel, byRole);
+    }
+
+    // ---------- 门就绪（详情与列表 pending 派生共用的唯一口径） ----------
+
+    /**
+     * 当前阶段门就绪（A3 §5：计数门禁 ∧ 业务谓词）：无 OPEN 期 / 终态 / 无门段
+     * 返回 null（无按钮可点亮）；G3（actor=开发平台）另 ∧ 无未关闭 Bug。
+     */
+    private ProjectDetailResponse.GateView gateView(Long projectId, Iteration iteration) {
+        if (iteration == null || iteration.getStatus() != IterationStatus.OPEN) {
+            return null;
+        }
+        StageEntry stage = ProjectMainChain.definition().find(iteration.getStage()).orElse(null);
+        if (stage == null || stage.terminal() || stage.exitGate() == null) {
+            return null;
+        }
+        ExitGate gate = stage.exitGate();
+        boolean ready = stageAdvanceService.gateOpen(ProjectMainChain.definition(),
+                iteration.getStage(), iteration.getStageTaskCount());
+        if (ready && ProjectMainChain.GATE_ACTOR_PLATFORM.equals(gate.actor())) {
+            ready = !openBugQueryPort.hasOpenBugs(projectId);
+        }
+        return new ProjectDetailResponse.GateView(gate.actor(), ready);
+    }
+
+    // ---------- 列表过滤 ----------
+
+    /** 过滤参数归一（空白 = 缺省 all）；不合法取值 400 PRJ_014。 */
+    private static String normalizeFilter(String status) {
+        if (status == null || status.isBlank()) {
+            return null;
+        }
+        String filter = status.strip().toLowerCase(Locale.ROOT);
+        if (!FILTER_ACTIVE.equals(filter) && !FILTER_PENDING.equals(filter)
+                && !FILTER_ARCHIVED.equals(filter)) {
+            throw new ApplicationException(ProjectMessage.PROJECT_FILTER_UNKNOWN, status);
+        }
+        return filter;
+    }
+
+    private boolean matches(Project project, List<Iteration> iterations, String filter,
+                            Set<Long> pendingWorkspaces) {
+        if (filter == null) {
+            return true;
+        }
+        if (FILTER_ARCHIVED.equals(filter)) {
+            return project.getArchivedAt() != null;
+        }
+        // active/pending 都是「在办」视角：归档项目不再出现（归档是单向终点，A3 §4）
+        if (project.getArchivedAt() != null) {
+            return false;
+        }
+        if (FILTER_ACTIVE.equals(filter)) {
+            return Iteration.currentOf(iterations)
+                    .map(iteration -> iteration.getStatus() == IterationStatus.OPEN)
+                    .orElse(false);
+        }
+        Iteration current = Iteration.currentOf(iterations).orElse(null);
+        ProjectDetailResponse.GateView gate = gateView(project.getId(), current);
+        return (gate != null && gate.ready())
+                || pendingWorkspaces.contains(project.getWorkspaceId());
+    }
+
+    // ---------- 响应拼装 ----------
+
+    /** 详情拼装：列表字段 + 主链定义数据 + 门就绪。 */
+    private ProjectDetailResponse toDetail(Project project, Iteration iteration,
+                                           ProjectDetailResponse.GateView gate) {
+        ProjectResponse base = toResponse(project, iteration);
+        List<ProjectDetailResponse.StageView> stages = ProjectMainChain.definition().stages()
+                .stream()
+                .map(stage -> new ProjectDetailResponse.StageView(stage.name(), stage.label(),
+                        stage.defaultRole(),
+                        stage.exitGate() != null ? stage.exitGate().actor() : null,
+                        stage.terminal()))
+                .toList();
+        return new ProjectDetailResponse(base.id(), base.name(), base.type(), base.typeName(),
+                base.engine(), base.workspaceId(), base.stage(), base.stageLabel(),
+                base.status(), base.statusLabel(), base.stageTaskCount(), base.archived(),
+                base.createdAt(), stages, gate);
+    }
+
+    /** 列表项拼装：期位置（stage/标签；收口后为 CLOSED）+ 派生项目状态（归档 >
+     * 开发中/已交付，A3 §4 三态）+ 计数（收口后不展示——门禁输入，过程已结束）。 */
+    private ProjectResponse toResponse(Project project, Iteration iteration) {
+        boolean archived = project.getArchivedAt() != null;
+        boolean open = !archived && iteration != null
+                && iteration.getStatus() == IterationStatus.OPEN;
+        String stage = iteration != null ? iteration.getStage() : null;
+        String stageLabel = stage != null
+                ? ProjectMainChain.definition().find(stage).map(StageEntry::label).orElse(null)
+                : null;
+        return new ProjectResponse(
+                project.getId().toString(),
+                project.getName(),
+                project.getType(),
+                project.getType().getName(),
+                project.getEngine(),
+                project.getWorkspaceId().toString(),
+                stage,
+                stageLabel,
+                archived ? ProjectResponse.STATUS_ARCHIVED
+                        : open ? ProjectResponse.STATUS_IN_PROGRESS
+                                : ProjectResponse.STATUS_DELIVERED,
+                archived ? "已归档" : open ? "开发中" : "已交付",
+                open ? iteration.getStageTaskCount() : null,
+                archived,
+                project.getCreatedAt());
+    }
+
+    private Project requireProject(Long projectId) {
+        return projectRepository.findById(projectId)
+                .orElseThrow(() -> new ApplicationException(ProjectMessage.PROJECT_NOT_FOUND));
+    }
+}

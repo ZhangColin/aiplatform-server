@@ -118,6 +118,15 @@ public class WorkspaceLifecycleAppService {
     }
 
     /**
+     * 打包工作区源码为 tar.gz 字节流（排除 .env 机密与 node_modules；下载交付
+     * 的文件名/HTTP 头归调用方，本层只出字节）。
+     */
+    public byte[] packSource(String workspaceId) {
+        Workspace workspace = requireWorkspace(workspaceId);
+        return environmentBackend.packSource(workspace.toHandle());
+    }
+
+    /**
      * 销毁工作区：物理资源先级联清理（容器→网络→卷，后端尽力而为），记录删除的
      * 事务内发 WorkspaceDestroyed（AFTER_COMMIT）。物理清理失败不阻断记录删除——
      * Docker 侧残留以真实状态为准，可重建句柄后重试销毁。

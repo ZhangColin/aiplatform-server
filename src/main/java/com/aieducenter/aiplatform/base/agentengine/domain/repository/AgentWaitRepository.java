@@ -25,6 +25,9 @@ public interface AgentWaitRepository extends BaseRepository<AgentWait, String> {
     List<AgentWait> findByWorkspaceIdAndStatusOrderByRaisedAtDesc(Long workspaceId,
                                                                   WaitStatus status);
 
+    /** 某状态的全部等待点（跨项目待办查询面：一次取全量按工作区分组，A2 §60）。 */
+    List<AgentWait> findByStatus(WaitStatus status);
+
     /** 一次运行名下的等待点（终态联动 / deny 计数的锚）。 */
     List<AgentWait> findByRunIdAndStatus(String runId, WaitStatus status);
 
