@@ -63,7 +63,15 @@ _Avoid_: 平台通知（那是状态变化广播，两类不混）
 RAG 检索注入机制——agent 阶段开始时检索历史知识拼入上下文（当前实现 = 后端检索注入）。
 
 **计量上下文（Metering Context）**：
-用量采集与聚合查询的能力域（base.metering）：UsageEvent 协议（token 五档 input/output/cache_read/cache_write/reasoning，只记 token 不记钱）+ 按 subject 聚合查询。平台内起步，独立计量服务是演化方向（换上报 / 查询适配器）。
+用量采集与聚合查询的能力域（base.metering）：UsageEvent 协议（token 五档 input/output/cache_read/cache_write/reasoning）+ 按 subject 聚合查询 + 费用换算（见「平台成本」）。**零商业概念**：存储只记 token、换算只出平台成本、无加价/售价/账单。平台内起步，独立计量服务是演化方向（换上报 / 查询适配器）。
+_Avoid_: 计费（那是商业层概念，加价/售价在业务层，v1 出局）
+
+**单价表（Price Table）**：
+平台成本换算用的单价数据（`met_price_entries`，base.metering 私有表）：provider × model × token 档位 × 币种，带生效区间；改价 = 关旧行开新行，历史成本按事件时点单价不漂移。
+_Avoid_: 价格表/费率（暗示售价）、业务层配置下发（表在计量上下文内，不经端口暴露）
+
+**平台成本（Platform Cost）**：
+平台为模型调用付出的成本金额（token 用量 × 事件时点生效单价，按币种分桶不折算）——运营口径，非商业概念；不含加价，加价属业务层计费策略（v1 出局）。
 
 **阶段（Stage）**：
 阶段推进引擎（base.process）的步骤单元；序列由业务侧传入（平台主链定义：阶段列表 + 每阶段可空默认角色 + 产物清单），引擎只管推进 / 驳回停留 / 门禁计数，不知业务内容。
@@ -133,5 +141,5 @@ _Avoid_: 门户/端（那是面向用户的四个门户概念）、待办（那�
 - **门与 HITL 不统一建模**：决策门 = 流程层关口（business，映射 base.process）；HITL 等待点 = 智能体层挂起（base.agentengine 通道）。两层分离、UI 统一呈现为「待我处理」（Code-Canvas 双表实践佐证）。
 - **工具与过程正交**：工作区/智能体任务/任务/bug 挂项目常开；期状态机与确认是过程覆盖层——期关闭不锁开发能力（期后修 bug 照常进行）。
 - **框架托管策略**：代码类智能体 → coding agent（OpenCode/DSH 经适配层）；业务类智能体 → AgentScope 类框架（MVP 不引入，preset 先行）；两类经 MCP/A2A 互通。
-- **计量上下文平台内起步**：base.metering 承担采集 / 存储 / 聚合 / 查询（UsageEvent，只记 token 不记钱）；独立计量服务是演化方向（换上报 / 查询适配器），单价 / 加价在业务层；支付独立服务，业务层只对接。
+- **计量上下文平台内起步**：base.metering 承担采集 / 存储 / 聚合 / 换算 / 查询（UsageEvent 只记 token；单价表与平台成本换算同在 base.metering，A6）；独立计量服务是演化方向（四段整体迁，换上报 / 查询适配器）；加价/售价在业务层（v1 出局）；支付独立服务，业务层只对接。**计量 ≠ 路由**：模型选择/档位路由属 agentengine（A6 §6）。
 - **MVP 不引入**：AgentScope、强隔离 microVM（成规模才上）、腾讯云向量库（>100 万向量才迁）。
