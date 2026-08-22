@@ -21,7 +21,10 @@ import com.aieducenter.aiplatform.base.metering.domain.port.UsageQueryPort;
 import com.aieducenter.aiplatform.base.process.domain.model.ExitGate;
 import com.aieducenter.aiplatform.base.process.domain.model.StageEntry;
 import com.aieducenter.aiplatform.base.process.domain.service.StageAdvanceService;
+import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
+import com.aieducenter.aiplatform.base.workspace.domain.error.WorkspaceMessage;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectBriefResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
@@ -60,19 +63,22 @@ public class ProjectQueryAppService {
     private final OpenBugQueryPort openBugQueryPort;
     private final AgentWaitAppService agentWaitAppService;
     private final UsageQueryPort usageQueryPort;
+    private final WorkspaceLifecycleAppService workspaceLifecycleAppService;
 
     public ProjectQueryAppService(ProjectRepository projectRepository,
                                   IterationRepository iterationRepository,
                                   StageAdvanceService stageAdvanceService,
                                   OpenBugQueryPort openBugQueryPort,
                                   AgentWaitAppService agentWaitAppService,
-                                  UsageQueryPort usageQueryPort) {
+                                  UsageQueryPort usageQueryPort,
+                                  WorkspaceLifecycleAppService workspaceLifecycleAppService) {
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
         this.stageAdvanceService = stageAdvanceService;
         this.openBugQueryPort = openBugQueryPort;
         this.agentWaitAppService = agentWaitAppService;
         this.usageQueryPort = usageQueryPort;
+        this.workspaceLifecycleAppService = workspaceLifecycleAppService;
     }
 
     /**
@@ -82,7 +88,7 @@ public class ProjectQueryAppService {
      * @throws ApplicationException PRJ_001 项目不存在
      */
     public ProjectDetailResponse detail(Long projectId) {
-        Project project = requireProject(projectId);
+        Project project = loadProject(projectId);
         Iteration iteration = Iteration
                 .currentOf(iterationRepository.findByProjectId(projectId)).orElse(null);
         return toDetail(project, iteration, gateView(projectId, iteration));
@@ -117,7 +123,7 @@ public class ProjectQueryAppService {
      * @throws ApplicationException PRJ_001 项目不存在
      */
     public ProjectUsageResponse usage(Long projectId) {
-        requireProject(projectId);
+        loadProject(projectId);
         UsageSummary summary = usageQueryPort.bySubject(Long.toString(projectId), null, null);
         List<ProjectUsageResponse.ModelUsage> byModel = summary.byModel().stream()
                 .map(model -> new ProjectUsageResponse.ModelUsage(
@@ -164,7 +170,81 @@ public class ProjectQueryAppService {
                         project -> project.getId().toString()));
     }
 
+    /**
+     * 项目简报批查（task BC opc 任务卡片的最小项目上下文，A4 §7）：项目名 +
+     * 预览地址（工作区记录的 previewPort 派生——示意级预览 URL 形如
+     * {@code http://localhost:{port}/}，与 EnvironmentBackend.exposePort 同式，
+     * 此处零副作用只读派生）。不存在的项目（已删残留）不在 Map。
+     */
+    public Map<Long, ProjectBriefResponse> projectBriefs(Collection<Long> projectIds) {
+        if (projectIds == null || projectIds.isEmpty()) {
+            return Map.of();
+        }
+        return projectRepository.findAllById(projectIds).stream()
+                .collect(Collectors.toMap(Project::getId, this::briefOf));
+    }
+
+    /**
+     * 项目归属账号（task BC 详情的 opc/dev 谓词半边：assignee ∨ owner，
+     * A4 §7）。项目不存在返回 null。
+     */
+    public Long ownerAccountIdOf(Long projectId) {
+        return projectRepository.findById(projectId)
+                .map(Project::getOwnerAccountId)
+                .orElse(null);
+    }
+
+    /**
+     * 项目存在性把关（task BC 读侧入口共用，PRJ_001 同码）。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在
+     */
+    public void requireProject(Long projectId) {
+        loadProject(projectId);
+    }
+
+    /**
+     * projectId 字符串寻址解析 + 存在性把关（task BC 的项目路径端点收口——跨
+     * 上下文经应用层，端点层工具不外借；非数值/非正数同 PRJ_001，404 语义）。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在
+     */
+    public Long requireProjectId(String projectId) {
+        try {
+            long parsed = Long.parseLong(projectId);
+            if (parsed > 0) {
+                return loadProject(parsed).getId();
+            }
+        } catch (NumberFormatException ignored) {
+            // 非数值 → 落到下方统一 404
+        }
+        throw new ApplicationException(ProjectMessage.PROJECT_NOT_FOUND);
+    }
+
     // ---------- 全量读装载（列表与门就绪清单共用前奏） ----------
+
+    /** 简报拼装：项目名 + 预览地址（previewPort 派生，零副作用）；工作区记录
+     * 已亡的残留项目预览地址置 null（卡片仍可导航，不因读简报炸列表）。 */
+    private ProjectBriefResponse briefOf(Project project) {
+        return new ProjectBriefResponse(project.getId().toString(), project.getName(),
+                previewUrlOf(project.getWorkspaceId()));
+    }
+
+    /** 预览地址派生（与 EnvironmentBackend.exposePort 同式，零副作用）；工作区
+     * 记录已亡（WSP_001）置 null，其余异常照抛。 */
+    private String previewUrlOf(Long workspaceId) {
+        try {
+            int previewPort = workspaceLifecycleAppService
+                    .get(Long.toString(workspaceId)).previewPort();
+            return "http://localhost:" + previewPort + "/";
+        } catch (ApplicationException e) {
+            if (!WorkspaceMessage.WORKSPACE_NOT_FOUND.code()
+                    .equals(e.getCodeMessage().code())) {
+                throw e;
+            }
+            return null;
+        }
+    }
 
     /** 期按项目分组（全量读：量小不分页，列表/门就绪清单一次装载共用）。 */
     private Map<Long, List<Iteration>> iterationsByProject() {
@@ -298,7 +378,7 @@ public class ProjectQueryAppService {
                 project.getCreatedAt());
     }
 
-    private Project requireProject(Long projectId) {
+    private Project loadProject(Long projectId) {
         return projectRepository.findById(projectId)
                 .orElseThrow(() -> new ApplicationException(ProjectMessage.PROJECT_NOT_FOUND));
     }

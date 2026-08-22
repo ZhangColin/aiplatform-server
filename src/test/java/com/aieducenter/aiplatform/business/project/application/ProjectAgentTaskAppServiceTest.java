@@ -275,6 +275,57 @@ class ProjectAgentTaskAppServiceTest {
         verify(notificationAppService, never()).publish(anyString(), any());
     }
 
+    // ---------- A4 §5 期联动：人测试任务的 advance 守卫（票 #26） ----------
+
+    @Test
+    void given_dev_stage_when_human_test_task_created_then_advance_and_stage_changed() {
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEV);
+
+        boolean advanced = appService.advanceToTestOnTestTaskCreation(project.getId());
+
+        assertThat(advanced).isTrue();
+        assertThat(openIteration(project).getStage()).isEqualTo(ProjectMainChain.STAGE_TEST);
+        assertThat(openIteration(project).getStageTaskCount()).isZero(); // 人任务不计数
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(notificationAppService).publish(eq(ProjectEventTypes.STAGE_CHANGED),
+                payload.capture());
+        assertThat(payload.getValue())
+                .containsEntry("stage", ProjectMainChain.STAGE_TEST)
+                .containsEntry("stageLabel", "测试")
+                .doesNotContainKey("approved")
+                .doesNotContainKey("rejected"); // 编排触发，非门决策
+    }
+
+    @Test
+    void given_test_stage_when_human_test_task_created_then_noop() {
+        // 复测场景：已在测试段不动
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_TEST);
+
+        assertThat(appService.advanceToTestOnTestTaskCreation(project.getId())).isFalse();
+        assertThat(openIteration(project).getStage()).isEqualTo(ProjectMainChain.STAGE_TEST);
+        verify(notificationAppService, never()).publish(anyString(), any());
+    }
+
+    @Test
+    void given_closed_or_missing_project_when_human_test_task_created_then_noop_or_prj_001() {
+        // 期 CLOSED（期后修复）：不动
+        Project closed = persistedProject("opencode");
+        Iteration iteration = Iteration.open(closed.getId(), Iteration.FIRST_SEQ,
+                ProjectMainChain.STAGE_ACCEPTANCE);
+        iteration.close(ProjectMainChain.STAGE_CLOSED);
+        iterationRepository.save(iteration);
+
+        assertThat(appService.advanceToTestOnTestTaskCreation(closed.getId())).isFalse();
+        verify(notificationAppService, never()).publish(anyString(), any());
+
+        // 项目不存在：PRJ_001（task BC 建任务的前置把关）
+        assertThatThrownBy(() -> appService.advanceToTestOnTestTaskCreation(-1L))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
     @Test
     void given_missing_project_when_dispatch_then_prj_001() {
         assertThatThrownBy(() -> appService.dispatchTask(-1L,

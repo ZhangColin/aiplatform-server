@@ -68,7 +68,7 @@ class ProjectGateAppServiceTest {
     @MockitoBean
     private PlatformNotificationAppService notificationAppService;
 
-    /** G3 业务谓词端口：默认无 Bug（NoopOpenBugQueryAdapter 同行为，mock 以便验证调用）。 */
+    /** G3 业务谓词端口（#26 起真实现查 tsk_bugs；此处 mock 以便验证调用与翻态场景）。 */
     @MockitoBean
     private OpenBugQueryPort openBugQueryPort;
 

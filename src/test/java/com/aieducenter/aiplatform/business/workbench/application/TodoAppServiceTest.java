@@ -10,6 +10,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppService;
@@ -18,6 +19,8 @@ import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
+import com.aieducenter.aiplatform.business.task.application.TaskQueryAppService;
+import com.aieducenter.aiplatform.business.task.application.dto.response.TaskTodoSource;
 import com.aieducenter.aiplatform.business.workbench.application.dto.response.TodoItemResponse;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,11 +46,15 @@ class TodoAppServiceTest {
     @Mock
     private ProjectQueryAppService projectQueryAppService;
 
+    @Mock
+    private TaskQueryAppService taskQueryAppService;
+
     private TodoAppService appService;
 
     @BeforeEach
     void setUp() {
-        appService = new TodoAppService(agentWaitAppService, projectQueryAppService);
+        appService = new TodoAppService(agentWaitAppService, projectQueryAppService,
+                taskQueryAppService);
     }
 
     // ---------- AGENT_WAIT ----------
@@ -90,6 +97,8 @@ class TodoAppServiceTest {
     @Test
     void given_gate_ready_when_list_dev_then_gate_pending_todo_ref_id_project() {
         when(agentWaitAppService.listPendingWaits()).thenReturn(List.of());
+        when(taskQueryAppService.submittedTodoSources()).thenReturn(List.of());
+        when(taskQueryAppService.retestReadyProjects()).thenReturn(List.of());
         when(projectQueryAppService.listGateReady()).thenReturn(List.of(
                 new GateReadyResponse("p9", "需求梳理", "user", T1)));
 
@@ -111,6 +120,8 @@ class TodoAppServiceTest {
                 .thenReturn(Map.of(4242L, "p1"));
         when(projectQueryAppService.listGateReady()).thenReturn(List.of(
                 new GateReadyResponse("p9", "验收", "user", T1)));
+        when(taskQueryAppService.submittedTodoSources()).thenReturn(List.of());
+        when(taskQueryAppService.retestReadyProjects()).thenReturn(List.of());
 
         List<TodoItemResponse> todos = appService.list("dev");
 
@@ -119,19 +130,68 @@ class TodoAppServiceTest {
                         TodoItemResponse.TYPE_GATE_PENDING); // 跨型合并，新者在前
     }
 
+    // ---------- 任务型四型（A4 §7 接线） ----------
+
+    @Test
+    void given_submitted_task_when_list_dev_then_task_submitted_todo() {
+        when(agentWaitAppService.listPendingWaits()).thenReturn(List.of());
+        when(projectQueryAppService.listGateReady()).thenReturn(List.of());
+        when(taskQueryAppService.submittedTodoSources()).thenReturn(List.of(
+                new TaskTodoSource("t1", "p1", "回归测试", T1)));
+        when(taskQueryAppService.retestReadyProjects()).thenReturn(List.of());
+
+        List<TodoItemResponse> todos = appService.list("dev");
+
+        assertThat(todos).hasSize(1);
+        assertThat(todos.get(0).type()).isEqualTo(TodoItemResponse.TYPE_TASK_SUBMITTED);
+        assertThat(todos.get(0).projectId()).isEqualTo("p1");
+        assertThat(todos.get(0).refId()).isEqualTo("t1"); // 任务型 refId=taskId
+        assertThat(todos.get(0).title()).isEqualTo("「回归测试」已提交，待确认");
+        assertThat(todos.get(0).createdAt()).isEqualTo(T1);
+    }
+
+    @Test
+    void given_retest_ready_project_when_list_dev_then_retest_todo_ref_id_project() {
+        when(agentWaitAppService.listPendingWaits()).thenReturn(List.of());
+        when(projectQueryAppService.listGateReady()).thenReturn(List.of());
+        when(taskQueryAppService.submittedTodoSources()).thenReturn(List.of());
+        when(taskQueryAppService.retestReadyProjects()).thenReturn(List.of(
+                new TaskTodoSource(null, "p5", null, T2)));
+
+        List<TodoItemResponse> todos = appService.list("dev");
+
+        assertThat(todos).hasSize(1);
+        assertThat(todos.get(0).type()).isEqualTo(TodoItemResponse.TYPE_RETEST_READY);
+        assertThat(todos.get(0).refId()).isEqualTo("p5"); // RETEST_READY refId=projectId
+        assertThat(todos.get(0).title()).isEqualTo("Bug 已修复，可发复测任务");
+    }
+
     // ---------- view 过滤 ----------
 
     @Test
-    void given_opc_view_when_list_then_empty_without_dev_types() {
-        // opc 视角不含 dev 两型：任务型（NEW_TASK/TASK_REJECTED）随 A4 接线
-        assertThat(appService.list("opc")).isEmpty();
-        verifyNoInteractions(agentWaitAppService, projectQueryAppService);
+    void given_opc_view_when_list_then_mine_types_only() throws Exception {
+        // opc = NEW_TASK / TASK_REJECTED（assignee=me——会话上下文取账号）
+        when(taskQueryAppService.publishedTodoSources(42L)).thenReturn(List.of(
+                new TaskTodoSource("t1", "p1", "回归测试", T1)));
+        when(taskQueryAppService.rejectedTodoSources(42L)).thenReturn(List.of());
+
+        List<TodoItemResponse> todos = RequestContext.runFor(
+                new RequestContext(null, null, null, null, 42L, "todo-test", null, null),
+                () -> appService.list("opc"));
+
+        assertThat(todos).extracting(TodoItemResponse::type)
+                .containsOnly(TodoItemResponse.TYPE_NEW_TASK);
+        assertThat(todos.get(0).refId()).isEqualTo("t1");
+        assertThat(todos.get(0).title()).isEqualTo("「回归测试」新任务，待开始");
+        verifyNoInteractions(agentWaitAppService, projectQueryAppService); // opc 不含 dev 两型
     }
 
     @Test
     void given_blank_view_when_list_then_defaults_to_dev() {
         when(agentWaitAppService.listPendingWaits()).thenReturn(List.of());
         when(projectQueryAppService.listGateReady()).thenReturn(List.of());
+        when(taskQueryAppService.submittedTodoSources()).thenReturn(List.of());
+        when(taskQueryAppService.retestReadyProjects()).thenReturn(List.of());
 
         assertThat(appService.list(null)).isEmpty();
         assertThat(appService.list("  ")).isEmpty();

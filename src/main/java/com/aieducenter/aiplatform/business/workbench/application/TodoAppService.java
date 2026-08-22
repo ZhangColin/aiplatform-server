@@ -7,10 +7,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 
+import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.core.exception.BaseCodeMessage;
 
@@ -19,13 +21,17 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.response.Wait
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
+import com.aieducenter.aiplatform.business.task.application.TaskQueryAppService;
+import com.aieducenter.aiplatform.business.task.application.dto.response.TaskTodoSource;
 import com.aieducenter.aiplatform.business.workbench.application.dto.response.TodoItemResponse;
 
 /**
- * 待办用例（A2 §4/§5）：计算式投影——AGENT_WAIT（跨项目 pending 等待点）与
- * GATE_PENDING（期门就绪）两型；view=dev|opc 过滤视角，任务型待办随 A4 接
- * task 查询端口（v1 opc 空）。无表无状态：每次全量重算、新者在前、不分页
- * （量小）；SSE 零新增——前端收既有平台通知即重拉（事件让 UI 活，正确性
+ * 待办用例（A2 §4/§5 + A4 §7 接线）：计算式投影——dev = AGENT_WAIT（跨项目
+ * pending 等待点）/ GATE_PENDING（期门就绪）/ TASK_SUBMITTED（已提交待确认）/
+ * RETEST_READY（可发复测）；opc = NEW_TASK / TASK_REJECTED（assignee=me）。
+ * 四型谓词照 A4 §7 澄清表，事实源在 task BC 查询面。无表无状态：每次全量
+ * 重算、新者在前、不分页（量小）；SSE 零新增——前端收既有平台通知
+ * （wait-raised / stage-changed / task-updated）即重拉（事件让 UI 活，正确性
  * 走 REST，ADR-0001）。
  */
 @Service
@@ -37,26 +43,38 @@ public class TodoAppService {
 
     private final AgentWaitAppService agentWaitAppService;
     private final ProjectQueryAppService projectQueryAppService;
+    private final TaskQueryAppService taskQueryAppService;
 
     public TodoAppService(AgentWaitAppService agentWaitAppService,
-                          ProjectQueryAppService projectQueryAppService) {
+                          ProjectQueryAppService projectQueryAppService,
+                          TaskQueryAppService taskQueryAppService) {
         this.agentWaitAppService = agentWaitAppService;
         this.projectQueryAppService = projectQueryAppService;
+        this.taskQueryAppService = taskQueryAppService;
     }
 
     /**
-     * 待办列表：两型投影合并、createdAt 倒序（新者在前）。
+     * 待办列表：视角内各型投影合并、createdAt 倒序（新者在前）。
      *
      * @throws ApplicationException view 非 dev/opc（400——本上下文无错误码前缀，
      *         入参问题走全局 BAD_REQUEST 面，业务错误来自源上下文）
      */
     public List<TodoItemResponse> list(String view) {
-        if (VIEW_OPC.equals(normalizeView(view))) {
-            return List.of(); // NEW_TASK / TASK_REJECTED 随 A4（#26）接线，v1 opc 空
-        }
         List<TodoItemResponse> todos = new ArrayList<>();
-        todos.addAll(agentWaitTodos());
-        todos.addAll(gatePendingTodos());
+        if (VIEW_OPC.equals(normalizeView(view))) {
+            // opc 资源归属半边（A4 §7）：assignee = 当前账号
+            Long me = RequestContext.getUserId();
+            todos.addAll(taskTodos(taskQueryAppService.publishedTodoSources(me),
+                    TodoItemResponse.TYPE_NEW_TASK, title -> "「" + title + "」新任务，待开始"));
+            todos.addAll(taskTodos(taskQueryAppService.rejectedTodoSources(me),
+                    TodoItemResponse.TYPE_TASK_REJECTED, title -> "「" + title + "」被驳回，待重新提交"));
+        } else {
+            todos.addAll(agentWaitTodos());
+            todos.addAll(gatePendingTodos());
+            todos.addAll(taskTodos(taskQueryAppService.submittedTodoSources(),
+                    TodoItemResponse.TYPE_TASK_SUBMITTED, title -> "「" + title + "」已提交，待确认"));
+            todos.addAll(retestReadyTodos());
+        }
         return todos.stream()
                 .sorted(Comparator.comparing(TodoItemResponse::createdAt).reversed())
                 .toList();
@@ -110,6 +128,26 @@ public class TodoAppService {
     private static TodoItemResponse toGatePendingTodo(GateReadyResponse gate) {
         return new TodoItemResponse(TodoItemResponse.TYPE_GATE_PENDING, gate.projectId(),
                 gate.projectId(), "「" + gate.stageLabel() + "」门待拍板", gate.readySince());
+    }
+
+    // ---------- 任务型四型（A4 §7 接线） ----------
+
+    /** 任务型待办（refId=taskId；title 带任务标题——人起标题非智能体产出）。 */
+    private static List<TodoItemResponse> taskTodos(List<TaskTodoSource> sources,
+                                                    String type, Function<String, String> title) {
+        return sources.stream()
+                .map(source -> new TodoItemResponse(type, source.projectId(),
+                        source.taskId(), title.apply(source.title()), source.since()))
+                .toList();
+    }
+
+    /** RETEST_READY → 待办（refId=projectId——动作是「发复测任务」，即项目上）。 */
+    private List<TodoItemResponse> retestReadyTodos() {
+        return taskQueryAppService.retestReadyProjects().stream()
+                .map(source -> new TodoItemResponse(TodoItemResponse.TYPE_RETEST_READY,
+                        source.projectId(), source.projectId(),
+                        "Bug 已修复，可发复测任务", source.since()))
+                .toList();
     }
 
     // ---------- 内部 ----------

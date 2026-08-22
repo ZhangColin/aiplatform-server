@@ -117,6 +117,33 @@ public class ProjectAgentTaskAppService {
                 result.engine(), role.name(), role.getName(), stage, result.accepted());
     }
 
+    /**
+     * A4 §5 期联动：创建（人）测试任务时的 advance 守卫——**开发→测试的唯一
+     * 触发**（与 dispatchTask 的智能体侧同口径，A3 §2.3）。期在开发段 →
+     * advance + stage-changed（编排触发，非人拍板，无计数——阶段计数只记
+     * agent 任务）；已在测试段（复测场景）/无 OPEN 期（期 CLOSED，期后修复）
+     * → 不动。返回是否推进（日志/测试面用）。
+     *
+     * <p>项目存在性在此校验（PRJ_001）——task BC 建任务的前置。</p>
+     */
+    public boolean advanceToTestOnTestTaskCreation(Long projectId) {
+        requireProject(projectId);
+        Iteration openIteration = iterationRepository
+                .findByProjectIdAndStatus(projectId, IterationStatus.OPEN)
+                .orElse(null);
+        if (openIteration == null
+                || !ProjectMainChain.STAGE_DEV.equals(openIteration.getStage())) {
+            return false; // 测试段（复测）/已收口（期后修复）不动，A4 §5
+        }
+        transactionTemplate.executeWithoutResult(status -> {
+            openIteration.advanceTo(ProjectMainChain.STAGE_TEST);
+            iterationRepository.save(openIteration);
+        });
+        notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED,
+                StageChangedPayload.plain(projectId, ProjectMainChain.STAGE_TEST));
+        return true;
+    }
+
     // ---------- 内部 ----------
 
     /** 角色解析：显式入参优先（REST 整型 code 已解码）；缺省取 OPEN 期当前阶段

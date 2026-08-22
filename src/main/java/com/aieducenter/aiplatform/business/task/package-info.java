@@ -13,7 +13,11 @@
  *
  * <h3>包结构</h3>
  * <ul>
- *   <li>四层骨架（domain / application / infrastructure / endpoints）随 A4 落位</li>
+ *   <li>domain - 领域层：聚合根（Task 任务状态机 / Bug 三态）、仓储接口、枚举、端口</li>
+ *   <li>application - 应用层：生命周期用例（状态迁移 + 确认事务 + TaskCompleted）、
+ *       查询用例（opc 指派清单 / Bug 面板 / workbench 四型待办源）、修复编排链（#27）</li>
+ *   <li>infrastructure - 基础设施层：project BC 的 OpenBugQueryPort 真实现等</li>
+ *   <li>endpoints - 北向接口适配层：任务/项目任务/Bug REST（A4 §6）</li>
  * </ul>
  *
  * @since 0.1.0

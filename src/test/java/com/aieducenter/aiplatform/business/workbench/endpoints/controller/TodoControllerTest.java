@@ -25,6 +25,8 @@ import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSe
 import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSessionStore;
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
+import com.aieducenter.aiplatform.business.task.application.TaskQueryAppService;
+import com.aieducenter.aiplatform.business.task.application.dto.response.TaskTodoSource;
 import com.aieducenter.aiplatform.business.workbench.application.TodoAppService;
 import com.aieducenter.aiplatform.config.WebMvcConfig;
 
@@ -37,9 +39,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * /api/todos 契约（A2 §4/§5 / 票 #25）：统一信封 data: TodoItem[]，view 缺省 dev、
- * opc 空（任务型随 A4）；走真实链路（filter → 拦截器 → controller → TodoAppService），
- * 无会话 401 统一信封。
+ * /api/todos 契约（A2 §4/§5 + A4 §7 任务型接线）：统一信封 data: TodoItem[]，
+ * view 缺省 dev（AGENT_WAIT/GATE_PENDING/TASK_SUBMITTED/RETEST_READY）、opc =
+ * NEW_TASK/TASK_REJECTED（assignee=me）；走真实链路（filter → 拦截器 →
+ * controller → TodoAppService），无会话 401 统一信封。
  */
 @WebMvcTest(TodoController.class)
 @Import({TodoAppService.class, WebMvcConfig.class,
@@ -57,6 +60,9 @@ class TodoControllerTest {
 
     @MockitoBean
     private ProjectQueryAppService projectQueryAppService;
+
+    @MockitoBean
+    private TaskQueryAppService taskQueryAppService;
 
     @Test
     void given_session_when_get_todos_then_items_in_envelope() throws Exception {
@@ -90,6 +96,8 @@ class TodoControllerTest {
         login("sid-1");
         when(agentWaitAppService.listPendingWaits()).thenReturn(List.of());
         when(projectQueryAppService.listGateReady()).thenReturn(List.of());
+        when(taskQueryAppService.submittedTodoSources()).thenReturn(List.of());
+        when(taskQueryAppService.retestReadyProjects()).thenReturn(List.of());
 
         mockMvc.perform(get("/api/todos").cookie(sessionCookie("sid-1")))
                 .andExpect(status().isOk())
@@ -100,15 +108,27 @@ class TodoControllerTest {
     }
 
     @Test
-    void given_opc_view_when_get_todos_then_empty_without_sources() throws Exception {
+    void given_opc_view_when_get_todos_then_task_types_only() throws Exception {
         login("sid-1");
+        when(taskQueryAppService.publishedTodoSources(3897654321098765432L))
+                .thenReturn(List.of(new TaskTodoSource("t1", "p1", "回归测试",
+                        Instant.parse("2026-08-22T09:00:00Z"))));
+        when(taskQueryAppService.rejectedTodoSources(3897654321098765432L))
+                .thenReturn(List.of(new TaskTodoSource("t2", "p1", "冒烟测试",
+                        Instant.parse("2026-08-22T10:00:00Z"))));
 
         mockMvc.perform(get("/api/todos").param("view", "opc")
                         .cookie(sessionCookie("sid-1")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data").isEmpty());
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].type").value("TASK_REJECTED")) // 新者在前
+                .andExpect(jsonPath("$.data[0].refId").value("t2"))
+                .andExpect(jsonPath("$.data[0].title").value("「冒烟测试」被驳回，待重新提交"))
+                .andExpect(jsonPath("$.data[1].type").value("NEW_TASK"))
+                .andExpect(jsonPath("$.data[1].refId").value("t1"))
+                .andExpect(jsonPath("$.data[1].title").value("「回归测试」新任务，待开始"));
 
-        verifyNoInteractions(agentWaitAppService, projectQueryAppService);
+        verifyNoInteractions(agentWaitAppService, projectQueryAppService); // opc 不含 dev 两型
     }
 
     @Test
@@ -121,7 +141,7 @@ class TodoControllerTest {
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.message").value("Invalid request"));
 
-        verifyNoInteractions(agentWaitAppService, projectQueryAppService);
+        verifyNoInteractions(agentWaitAppService, projectQueryAppService, taskQueryAppService);
     }
 
     @Test
