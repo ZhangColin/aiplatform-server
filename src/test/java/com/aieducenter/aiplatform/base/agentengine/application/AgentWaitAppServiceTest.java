@@ -173,6 +173,24 @@ class AgentWaitAppServiceTest {
     }
 
     @Test
+    void given_pending_waits_across_workspaces_when_listPendingWaits_then_all_newest_first() {
+        // 工作台 AGENT_WAIT 投影源（A2 §4/§5）：跨项目全量 PENDING，新者在前
+        AgentWait fresh = AgentWait.raise(4243L, "ses_9", "run-9", WaitKind.PERMISSION,
+                "per_9", null, null, NOW);
+        AgentWait older = AgentWait.raise(4242L, "ses_1", "run-1", WaitKind.QUESTION,
+                "que_1", null, null, NOW);
+        when(waitRepository.findByStatusOrderByRaisedAtDesc(WaitStatus.PENDING))
+                .thenReturn(List.of(fresh, older));
+
+        List<WaitPointResponse> pending = appService.listPendingWaits();
+
+        assertThat(pending).extracting(WaitPointResponse::workspaceId)
+                .containsExactly("4243", "4242"); // 跨项目（工作区不滤）
+        assertThat(pending).extracting(WaitPointResponse::status)
+                .containsOnly(WaitStatus.PENDING);
+    }
+
+    @Test
     void given_wait_id_when_wait_then_addressable_globally() {
         when(waitRepository.findById("wait_x")).thenReturn(Optional.of(
                 AgentWait.raise(4242L, "ses_1", "run-1", WaitKind.QUESTION, "que_1",

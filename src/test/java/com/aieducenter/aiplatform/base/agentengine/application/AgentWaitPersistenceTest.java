@@ -28,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AgentWaitPersistenceTest {
 
     private static final long WORKSPACE_ID = 987654322L;
+    private static final long OTHER_WORKSPACE_ID = 987654323L;
     private static final Instant RAISED_AT = Instant.parse("2026-08-22T08:00:00Z");
 
     @Autowired
@@ -38,8 +39,8 @@ class AgentWaitPersistenceTest {
 
     @AfterEach
     void tearDown() {
-        jdbcTemplate.update("DELETE FROM agt_pending_waits WHERE workspace_id = ?",
-                WORKSPACE_ID);
+        jdbcTemplate.update("DELETE FROM agt_pending_waits WHERE workspace_id IN (?, ?)",
+                WORKSPACE_ID, OTHER_WORKSPACE_ID);
     }
 
     @Test
@@ -113,6 +114,25 @@ class AgentWaitPersistenceTest {
                 .findByWorkspaceIdAndStatusOrderByRaisedAtDesc(WORKSPACE_ID, WaitStatus.PENDING))
                 .extracting(AgentWait::getWaitId)
                 .contains(reopened.getWaitId());
+    }
+
+    @Test
+    void given_pending_across_workspaces_when_listed_then_newest_first_across_projects() {
+        // 跨项目待办查询面（A2 §60）：工作台 AGENT_WAIT 投影源，全量 PENDING 新者在前
+        AgentWait older = waitRepository.save(AgentWait.raise(WORKSPACE_ID, "ses_c1",
+                "run-c1", WaitKind.QUESTION, "que_c1", null, null, RAISED_AT));
+        AgentWait settled = waitRepository.save(AgentWait.raise(WORKSPACE_ID, "ses_c1",
+                "run-c2", WaitKind.PERMISSION, "per_c2", null, null,
+                RAISED_AT.plusSeconds(30)));
+        settled.settle(WaitOutcome.APPROVED, RAISED_AT.plusSeconds(60));
+        waitRepository.save(settled);
+        AgentWait fresh = waitRepository.save(AgentWait.raise(OTHER_WORKSPACE_ID, "ses_c3",
+                "run-c3", WaitKind.QUESTION, "que_c3", null, null,
+                RAISED_AT.plusSeconds(90)));
+
+        assertThat(waitRepository.findByStatusOrderByRaisedAtDesc(WaitStatus.PENDING))
+                .extracting(AgentWait::getWaitId)
+                .containsExactly(fresh.getWaitId(), older.getWaitId()); // 新者在前，终态不混入
     }
 
     @Test

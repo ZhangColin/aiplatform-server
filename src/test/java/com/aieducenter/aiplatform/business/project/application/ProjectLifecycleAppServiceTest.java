@@ -14,6 +14,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.core.exception.CartisanException;
 import com.cartisan.core.exception.DomainException;
@@ -84,6 +85,25 @@ class ProjectLifecycleAppServiceTest {
     void tearDown() {
         jdbcTemplate.update("DELETE FROM prj_iterations");
         jdbcTemplate.update("DELETE FROM prj_projects");
+    }
+
+    @Test
+    void given_request_context_when_create_then_owner_account_id_filled() throws Exception {
+        // A2 §3 归属列：创建时填 RequestContext.userId（=accountId），v1 读路径不过滤
+        stubWorkspace("9101", "aiplatform-dev-101");
+        when(agentTaskAppService.dispatchTask(any(), any())).thenReturn(
+                new ProjectAgentTaskResponse("run-1", "ses-1", "opencode", "BA",
+                        "需求分析师", ProjectMainChain.STAGE_BA, true));
+
+        ProjectCreatedResponse response = RequestContext.runFor(
+                new RequestContext(null, null, null, null, 3897654321098765432L,
+                        "归属测试", null, null),
+                () -> appService.create(new CreateProjectCommand("归属项目", null,
+                        "opencode", "做一个官网")));
+
+        assertThat(projectRepository.findById(Long.parseLong(response.project().id())))
+                .hasValueSatisfying(project -> assertThat(project.getOwnerAccountId())
+                        .isEqualTo(3897654321098765432L));
     }
 
     @Test

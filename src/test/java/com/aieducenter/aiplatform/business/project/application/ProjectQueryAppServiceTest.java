@@ -1,6 +1,8 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.AfterEach;
@@ -16,6 +18,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppServi
 import com.aieducenter.aiplatform.base.metering.application.MeteringAppService;
 import com.aieducenter.aiplatform.base.metering.domain.model.TokenUsage;
 import com.aieducenter.aiplatform.base.metering.domain.model.UsageSummary;
+import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
@@ -307,6 +310,55 @@ class ProjectQueryAppServiceTest {
         assertThatThrownBy(() -> appService.usage(-1L))
                 .isInstanceOf(ApplicationException.class)
                 .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
+    // ---------- workbench 查询端口：门就绪清单 / workspaceId 寻址 ----------
+
+    @Test
+    void given_gate_ready_projects_when_listGateReady_then_ready_only_with_stage_label() {
+        // ① BA 计数达标（G1 用户门就绪）→ 在列
+        Project ready = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8301L);
+        // ② 计数不足 → 不在列
+        persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 0, 8302L);
+        // ③ 开发段无门 → 不在列
+        persistedProjectWithIteration(ProjectMainChain.STAGE_DEV, 3, 8303L);
+        // ④ 已归档（门就绪也排除：单向终点，在办视角）→ 不在列
+        Project archived = persistedProjectWithIteration(ProjectMainChain.STAGE_ACCEPTANCE,
+                0, 8304L);
+        archived.archive();
+        projectRepository.save(archived);
+
+        List<GateReadyResponse> readyList = appService.listGateReady();
+
+        assertThat(readyList).hasSize(1);
+        GateReadyResponse entry = readyList.get(0);
+        assertThat(entry.projectId()).isEqualTo(ready.getId().toString());
+        assertThat(entry.stageLabel()).isEqualTo("需求梳理");
+        assertThat(entry.gateActor()).isEqualTo(ProjectMainChain.GATE_ACTOR_USER);
+        // since = 期最近一次变更（门就绪时刻的近似锚点），与期的审计 updatedAt 对齐
+        Iteration iteration = iterationRepository.findByProjectId(ready.getId()).get(0);
+        assertThat(entry.readySince()).isEqualTo(iteration.getUpdatedAt()
+                .atZone(ZoneId.systemDefault()).toInstant());
+    }
+
+    @Test
+    void given_platform_gate_with_open_bugs_when_listGateReady_then_excluded() {
+        // G3 业务谓词（计数 ∧ 无未关闭 Bug）：有 Bug → 未就绪，不在列
+        persistedProjectWithIteration(ProjectMainChain.STAGE_TEST, 1, 8305L);
+        when(openBugQueryPort.hasOpenBugs(any())).thenReturn(true);
+
+        assertThat(appService.listGateReady()).isEmpty();
+    }
+
+    @Test
+    void given_workspace_ids_when_projectIdByWorkspaceId_then_only_known_mapped() {
+        Long projectId = persistedProjectWithoutIteration(8306L).getId();
+
+        Map<Long, String> mapped = appService.projectIdByWorkspaceId(Set.of(8306L, 9999L));
+
+        assertThat(mapped).containsEntry(8306L, projectId.toString());
+        assertThat(mapped).doesNotContainKey(9999L); // 工作区无项目：不映射
+        assertThat(appService.projectIdByWorkspaceId(Set.of())).isEmpty(); // 空入参安全
     }
 
     // ---------- 测试数据 ----------

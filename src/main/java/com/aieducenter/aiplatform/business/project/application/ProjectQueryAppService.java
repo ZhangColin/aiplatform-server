@@ -1,8 +1,12 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -17,6 +21,7 @@ import com.aieducenter.aiplatform.base.metering.domain.port.UsageQueryPort;
 import com.aieducenter.aiplatform.base.process.domain.model.ExitGate;
 import com.aieducenter.aiplatform.base.process.domain.model.StageEntry;
 import com.aieducenter.aiplatform.base.process.domain.service.StageAdvanceService;
+import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
@@ -33,9 +38,10 @@ import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepo
 /**
  * 项目读侧用例（片5c，A3 §5 / A1 §2.5）：详情（期位置 + 主链定义数据 + 门就绪 +
  * 派生状态）、列表（状态过滤 active/pending/archived/缺省 all）、用量（总量 +
- * 分模型 + 分角色）。写侧（生命周期/门操作/需求池）各自成服务，读拼装集中一处——
- * 门就绪的裁决（计数 ∧ 业务谓词）与列表 pending 派生（期门就绪 ∨ 工作区待处理
- * 等待点，A2 §63）同源，避免两处口径漂移。
+ * 分模型 + 分角色）+ workbench 查询端口（门就绪清单 / workspaceId 寻址，A2 §5）。
+ * 写侧（生命周期/门操作/需求池）各自成服务，读拼装集中一处——门就绪的裁决
+ * （计数 ∧ 业务谓词）与列表 pending 派生（期门就绪 ∨ 工作区待处理等待点，A2 §63）
+ * 同源，避免两处口径漂移。
  */
 @Service
 public class ProjectQueryAppService {
@@ -95,9 +101,8 @@ public class ProjectQueryAppService {
         Set<Long> pendingWorkspaces = FILTER_PENDING.equals(filter)
                 ? agentWaitAppService.pendingWorkspaceIds()
                 : Set.of();
-        Map<Long, List<Iteration>> iterationsByProject = iterationRepository.findAll().stream()
-                .collect(Collectors.groupingBy(Iteration::getProjectId));
-        return projectRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
+        Map<Long, List<Iteration>> iterationsByProject = iterationsByProject();
+        return projectsNewestFirst().stream()
                 .filter(project -> matches(project, iterationsByProject.get(project.getId()),
                         filter, pendingWorkspaces))
                 .map(project -> toResponse(project, Iteration
@@ -128,6 +133,50 @@ public class ProjectQueryAppService {
                 byModel, byRole);
     }
 
+    // ---------- workbench 查询端口（A2 §5） ----------
+
+    /**
+     * 门就绪项目清单（workbench GATE_PENDING 待办投影源）：期 OPEN ∧ 当前阶段
+     * 有门 ∧ 门禁满足（{@link #detail} 的 gate 视图同一裁决口径，两处不漂移）。
+     * 归档项目不在列（单向终点，在办视角排除）；创建时间倒序。
+     */
+    public List<GateReadyResponse> listGateReady() {
+        Map<Long, List<Iteration>> iterationsByProject = iterationsByProject();
+        return projectsNewestFirst().stream()
+                .filter(project -> project.getArchivedAt() == null)
+                .map(project -> gateReadyOf(project, Iteration
+                        .currentOf(iterationsByProject.get(project.getId())).orElse(null)))
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    /**
+     * workspaceId → projectId 寻址（workbench AGENT_WAIT 待办投影：等待点挂工作区，
+     * 待办以项目寻址）。无对应项目的工作区（非 dev 环境 / 项目已删的残留等待点）
+     * 不在返回——其待办无处导航，投影层自会跳过。
+     */
+    public Map<Long, String> projectIdByWorkspaceId(Collection<Long> workspaceIds) {
+        if (workspaceIds == null || workspaceIds.isEmpty()) {
+            return Map.of();
+        }
+        return projectRepository.findByWorkspaceIdIn(workspaceIds).stream()
+                .collect(Collectors.toMap(Project::getWorkspaceId,
+                        project -> project.getId().toString()));
+    }
+
+    // ---------- 全量读装载（列表与门就绪清单共用前奏） ----------
+
+    /** 期按项目分组（全量读：量小不分页，列表/门就绪清单一次装载共用）。 */
+    private Map<Long, List<Iteration>> iterationsByProject() {
+        return iterationRepository.findAll().stream()
+                .collect(Collectors.groupingBy(Iteration::getProjectId));
+    }
+
+    /** 全量项目，创建时间倒序。 */
+    private List<Project> projectsNewestFirst() {
+        return projectRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
+    }
+
     // ---------- 门就绪（详情与列表 pending 派生共用的唯一口径） ----------
 
     /**
@@ -149,6 +198,19 @@ public class ProjectQueryAppService {
             ready = !openBugQueryPort.hasOpenBugs(projectId);
         }
         return new ProjectDetailResponse.GateView(gate.actor(), ready);
+    }
+
+    /** 门就绪待办条目（未就绪 / 无门 / 已收口 → null）：title 素材（阶段标签）与时刻在此取齐。 */
+    private GateReadyResponse gateReadyOf(Project project, Iteration iteration) {
+        ProjectDetailResponse.GateView gate = gateView(project.getId(), iteration);
+        if (gate == null || !gate.ready()) {
+            return null;
+        }
+        StageEntry stage = ProjectMainChain.definition().find(iteration.getStage()).orElseThrow();
+        LocalDateTime since = iteration.getUpdatedAt() != null
+                ? iteration.getUpdatedAt() : iteration.getCreatedAt();
+        return new GateReadyResponse(project.getId().toString(), stage.label(), gate.actor(),
+                since.atZone(ZoneId.systemDefault()).toInstant());
     }
 
     // ---------- 列表过滤 ----------

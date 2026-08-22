@@ -24,6 +24,19 @@ public final class PartitionRules {
             .resideInAPackage("..aiplatform.business..")
             .because("base 分区零业务概念，只经端口被 business 消费（B0 蓝图 §1 / CONTEXT.md「底座」）");
 
+    /**
+     * workbench 是纯查询侧聚合（A2 §5）：无表、无 repository、无领域实体——
+     * 待办是计算式投影，不得沉淀 domain / infrastructure 形态（违例构造见
+     * test 源的 ArchFixtureWorkbench*）。
+     */
+    public static final ArchRule WORKBENCH_MUST_BE_QUERY_SIDE_ONLY = noClasses()
+            .that()
+            .resideInAPackage("..aiplatform.business.workbench..")
+            .should()
+            .resideInAnyPackage("..aiplatform.business.workbench.domain..",
+                    "..aiplatform.business.workbench.infrastructure..")
+            .because("workbench 是查询侧聚合（无表无领域实体，A2 §5）——投影不得变实体");
+
     private PartitionRules() {
     }
 }

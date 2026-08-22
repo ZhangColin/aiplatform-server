@@ -17,4 +17,7 @@ class ArchitectureTest extends CartisanArchRules {
 
     @ArchTest
     static final ArchRule base_should_not_depend_on_business = PartitionRules.BASE_MUST_NOT_DEPEND_ON_BUSINESS;
+
+    @ArchTest
+    static final ArchRule workbench_should_be_query_side_only = PartitionRules.WORKBENCH_MUST_BE_QUERY_SIDE_ONLY;
 }

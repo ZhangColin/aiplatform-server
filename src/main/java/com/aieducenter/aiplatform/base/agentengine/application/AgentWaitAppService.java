@@ -148,9 +148,20 @@ public class AgentWaitAppService {
      */
     @Transactional(readOnly = true)
     public Set<Long> pendingWorkspaceIds() {
-        return waitRepository.findByStatus(WaitStatus.PENDING).stream()
+        return waitRepository.findByStatusOrderByRaisedAtDesc(WaitStatus.PENDING).stream()
                 .map(AgentWait::getWorkspaceId)
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * 跨项目全部待处理等待点（工作台 AGENT_WAIT 待办投影源，A2 §4/§5）：一次取
+     * 全量、新者在前，量小不分页。纯表读——本口不做引擎轮询、不解释 body；
+     * 待办的 title 等呈现归 workbench 投影层。
+     */
+    @Transactional(readOnly = true)
+    public List<WaitPointResponse> listPendingWaits() {
+        return waitRepository.findByStatusOrderByRaisedAtDesc(WaitStatus.PENDING)
+                .stream().map(AgentWaitAppService::toResponse).toList();
     }
 
     /**

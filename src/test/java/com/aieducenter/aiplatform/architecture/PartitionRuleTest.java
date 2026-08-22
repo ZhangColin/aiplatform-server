@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 
 import com.aieducenter.aiplatform.base.ArchFixtureBaseClean;
 import com.aieducenter.aiplatform.base.ArchFixtureBaseViolation;
+import com.aieducenter.aiplatform.business.workbench.application.TodoAppService;
+import com.aieducenter.aiplatform.business.workbench.domain.ArchFixtureWorkbenchDomainEntity;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -31,6 +33,26 @@ class PartitionRuleTest {
         JavaClasses classes = new ClassFileImporter().importClasses(ArchFixtureBaseClean.class);
 
         assertThatCode(() -> PartitionRules.BASE_MUST_NOT_DEPEND_ON_BUSINESS.check(classes))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void given_workbench_class_in_domain_when_check_query_side_rule_then_violation_is_rejected() {
+        JavaClasses classes = new ClassFileImporter()
+                .importClasses(ArchFixtureWorkbenchDomainEntity.class);
+
+        assertThatThrownBy(() -> PartitionRules.WORKBENCH_MUST_BE_QUERY_SIDE_ONLY.check(classes))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("ArchFixtureWorkbenchDomainEntity")
+                .hasMessageContaining("查询侧聚合");
+    }
+
+    @Test
+    void given_workbench_query_side_class_when_check_query_side_rule_then_passes() {
+        JavaClasses classes = new ClassFileImporter()
+                .importClasses(TodoAppService.class);
+
+        assertThatCode(() -> PartitionRules.WORKBENCH_MUST_BE_QUERY_SIDE_ONLY.check(classes))
                 .doesNotThrowAnyException();
     }
 }
