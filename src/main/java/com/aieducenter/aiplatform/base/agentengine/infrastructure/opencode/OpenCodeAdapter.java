@@ -58,15 +58,16 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
  *   POST /session/{id}/message {parts, model, system}   发消息（同步；agent 提问时阻塞等待）
  *   GET  /question                                       待回答的问题（全局 que_ 机制，按 sessionID 过滤）
  *   POST /question/{requestID}/reply                    回答 {answers:[[label,..],..]}
+ *   GET  /permission                                     挂起中的权限列表（按 sessionID 过滤）
  *   POST /session/{id}/permissions/{permissionID}       审批 {response: once|reject}
- *   GET  /event                                          事件总线（SSE；权限发现通道，片2b）
+ *   GET  /event                                          事件总线（SSE；权限发现快路，片2b）
  *   POST /session/{id}/abort                             终止会话当前运行（deny cap 平台终止）
  *   GET  /global/health                                  健康检查
  * </pre>
  *
  * <p>等待点发现（片2b）：run 存续期由 {@link OpenCodeWaitWatcher} 盯住两类挂起——
- * 权限走事件总线（无列表端点）、问答走 question 轮询——检出即 {@code wait-raised}
- * 上报 sink，落库归 agentengine 应用层流桥。</p>
+ * 权限走 permission 轮询兜底 + 事件总线快路、问答走 question 轮询——检出即
+ * {@code wait-raised} 上报 sink，落库归 agentengine 应用层流桥。</p>
  *
  * <p>用量埋点（A1 §2.3 落位）：step-finish 增量在 {@link RunUsageAccumulator} 求和，
  * run 结束（含失败路径）上报 {@code UsageEventSink} 恰一条——幂等键

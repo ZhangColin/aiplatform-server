@@ -26,17 +26,21 @@ import com.aieducenter.aiplatform.base.agentengine.infrastructure.opencode.OpenC
 /**
  * opencode 等待点发现通道（片2b）：run 存续期盯住引擎的问答与权限挂起，检出即以
  * {@code wait-raised} 平台事件经 sink 上报（落库归 agentengine 应用层的流桥）。
- * 两路互补——opencode 1.18 两类挂起的暴露面不同（已核对 /doc OpenAPI 与事件总线）：
+ * 三路互补——opencode 1.18 两类挂起的暴露面不同（已核对 /doc OpenAPI 与事件总线）：
  *
  * <ul>
- *   <li><b>权限</b>：事件总线 {@code GET /event}（SSE）的 {@code permission.updated}
- *       帧（全量 Permission 载荷：id/sessionID/title/...）——无列表端点可轮询，
- *       订阅总线是唯一发现通道（demo 病「权限请求无发现通道」由此补齐）；</li>
+ *   <li><b>权限 · 兜底</b>：全局 {@code GET /permission} 轮询——列表端点 1.18 实测
+ *       存在（票 #35：本类旧注释「无列表端点可轮询」不成立），与问答轮询同构，是
+ *       权限发现的可靠底座；</li>
+ *   <li><b>权限 · 快路</b>：事件总线 {@code GET /event}（SSE）的 {@code permission.updated}
+ *       帧（全量 Permission 载荷）——检出时延更低，但总线路径丢帧未定性（#35 冒烟
+ *       两次权限挂起平台全盲、手动订阅却健康），只作加速不作依赖；与轮询路经
+ *       {@code reportedRefs} 去重，应用层 raise 幂等兜底双报；</li>
  *   <li><b>问答</b>：全局 {@code GET /question}（que_* 机制）轮询——问答不上总线。</li>
  * </ul>
  *
  * <p>生命周期与 run 同界：随消息发送起跑、run 结束（含失败/终止）即停，不做常驻
- * 连接管理；连接抖动自愈（重连/重轮询），引擎不可达静默等下一轮（问答轮询沿用
+ * 连接管理；连接抖动自愈（重连/重轮询），引擎不可达静默等下一轮（问答/权限轮询沿用
  * {@code pendingQuestions} 的容错语义）。平台重启期间检出的挂起不补录（run 已死，
  * 孤儿问答经会话复用清理或引擎侧超时收敛——Phase A 容忍，见票 #21 备注）。</p>
  */
@@ -48,6 +52,9 @@ final class OpenCodeWaitWatcher {
 
     /** 问答轮询间隔（问答无总线事件，轮询是唯一通道；秒级足够 HITL 场景）。 */
     private static final Duration QUESTION_POLL_INTERVAL = Duration.ofSeconds(2);
+
+    /** 权限轮询间隔（票 #35：/permission 列表轮询为权限发现的兜底通道，与问答同构）。 */
+    private static final Duration PERMISSION_POLL_INTERVAL = Duration.ofSeconds(2);
 
     /** 总线重连退避（连接被引擎关闭/网络抖动后）。 */
     private static final Duration RECONNECT_BACKOFF = Duration.ofSeconds(1);
@@ -67,6 +74,7 @@ final class OpenCodeWaitWatcher {
     /** 在飞的总线订阅（stop 时 cancel 以掐断长连接，防泄漏）。 */
     private volatile CompletableFuture<HttpResponse<java.util.stream.Stream<String>>> inFlightBus;
     private final Thread busListener;
+    private final Thread permissionPoller;
     private final Thread questionPoller;
     private volatile boolean running = true;
 
@@ -81,6 +89,9 @@ final class OpenCodeWaitWatcher {
         this.busListener = Thread.ofPlatform().daemon()
                 .name("opencode-wait-bus-" + THREAD_SEQ.incrementAndGet())
                 .start(this::listenEventBus);
+        this.permissionPoller = Thread.ofPlatform().daemon()
+                .name("opencode-wait-perm-" + THREAD_SEQ.incrementAndGet())
+                .start(this::pollPermissions);
         this.questionPoller = Thread.ofPlatform().daemon()
                 .name("opencode-wait-poll-" + THREAD_SEQ.incrementAndGet())
                 .start(this::pollQuestions);
@@ -105,10 +116,11 @@ final class OpenCodeWaitWatcher {
             inFlight.cancel(true);
         }
         busListener.interrupt();
+        permissionPoller.interrupt();
         questionPoller.interrupt();
     }
 
-    // ---------- 权限：事件总线 ----------
+    // ---------- 权限：事件总线（快路） ----------
 
     private void listenEventBus() {
         while (running) {
@@ -118,9 +130,10 @@ final class OpenCodeWaitWatcher {
                                 URI.create(endpoint.baseUrl() + "/event"))
                         .header("Authorization", endpoint.authHeader())
                         .header("Accept", "text/event-stream")
-                        .timeout(PROBE_TIMEOUT)
                         .GET().build();
                 // sendAsync + ofLines：headers 到达即取 body 流，行随总线帧渐进送达；
+                // 不设请求级 timeout——SSE 是长连接，timeout 会掐断流（#35 嫌疑点，
+                // 检出兜底已归轮询路，连接级超时由 HttpClient connectTimeout 承担）；
                 // future 留柄供 stop 掐断（cancel 会关闭连接，防 run 结束后长连泄漏）
                 future = http.sendAsync(request, HttpResponse.BodyHandlers.ofLines());
                 inFlightBus = future;
@@ -132,9 +145,13 @@ final class OpenCodeWaitWatcher {
                 Thread.currentThread().interrupt();
                 return; // stop() 主动掐断
             } catch (Exception e) {
-                // 连接抖动/引擎暂不可达：退避重连（run 内权限不能因一次断连丢发现）
-                log.debug("[agentengine] opencode 事件总线断开重连（run {}）：{}", runId,
-                        e.getMessage());
+                // 连接抖动/引擎暂不可达：退避重连（总线只是快路，权限检出兜底在轮询路；
+                // #35：info 级留痕——冒烟曾因 debug 级不可见漏判断连）。stop() 掐断
+                // 产生的取消异常不算断连，running=false 不记
+                if (running) {
+                    log.info("[agentengine] opencode 事件总线断开重连（run {}）：{}", runId,
+                            e.getMessage());
+                }
             } finally {
                 if (future != null) {
                     future.cancel(true);
@@ -169,6 +186,56 @@ final class OpenCodeWaitWatcher {
         }
         emit(WaitKind.PERMISSION, permissionId, summaryOf(permission),
                 mapper.convertValue(permission, Map.class));
+    }
+
+    // ---------- 权限：全局 permission 轮询（兜底） ----------
+
+    private void pollPermissions() {
+        while (running) {
+            try {
+                HttpRequest request = HttpRequest.newBuilder(
+                                URI.create(endpoint.baseUrl() + "/permission"))
+                        .header("Authorization", endpoint.authHeader())
+                        .timeout(PROBE_TIMEOUT)
+                        .GET().build();
+                HttpResponse<String> response = http.send(request,
+                        HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() < 300) {
+                    reportPermissions(response.body());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (IOException | RuntimeException e) {
+                // 引擎暂不可达：静默等下一轮（容错语义同问答轮询）
+                log.debug("[agentengine] opencode 权限轮询失败（run {}）：{}", runId,
+                        e.getMessage());
+            }
+            sleepQuietly(PERMISSION_POLL_INTERVAL);
+        }
+    }
+
+    private void reportPermissions(String body) {
+        JsonNode permissions;
+        try {
+            permissions = mapper.readTree(body);
+        } catch (IOException e) {
+            return;
+        }
+        if (!permissions.isArray()) {
+            return;
+        }
+        for (JsonNode permission : permissions) {
+            if (!sessionId.equals(permission.path("sessionID").asText())) {
+                continue; // 全局端点，按会话过滤（与 pendingQuestions 同口径）
+            }
+            String permissionId = permission.path("id").asText("");
+            if (permissionId.isBlank() || !reportedRefs.add(permissionId)) {
+                continue; // 与总线快路/前轮轮询重复
+            }
+            emit(WaitKind.PERMISSION, permissionId, summaryOf(permission),
+                    mapper.convertValue(permission, Map.class));
+        }
     }
 
     // ---------- 问答：全局 question 轮询 ----------

@@ -227,6 +227,31 @@ class OpenCodeAdapterTest {
     }
 
     @Test
+    void given_permission_pending_off_bus_when_run_in_flight_then_polling_detects_and_approve_resumes()
+            throws InterruptedException {
+        // 票 #35 复现场景：总线静默（permission.updated 帧不达 watcher）——权限检出
+        // 全靠 GET /permission 轮询兜底；message 阻塞等批复（引擎真实形态）
+        serve.permissionBlocksMessage = true;
+        List<AgentEvent> events = new CopyOnWriteArrayList<>();
+
+        adapter.runTask(handle, command("run-pp", null, null), events::add);
+
+        AgentEvent raised = awaitEvent(events, AgentEventTypes.WAIT_RAISED);
+        // 轮询检出：权限载荷原样进 data，title 为摘要
+        assertThat(raised.payload())
+                .containsEntry("kind", "PERMISSION")
+                .containsEntry("engineRef", "per_env_1")
+                .containsEntry("summary", "读取 /workspace/.env");
+        assertThat(raised.payload().get("data"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("sessionID", SESSION_ID);
+        // 批准送达引擎 → message 解阻塞 → run 正常续跑收口
+        adapter.replyPermission(handle, SESSION_ID, "per_env_1", true);
+        awaitEnd(events);
+        assertThat(serve.lastPermissionBody.path("response").asText()).isEqualTo("once");
+    }
+
+    @Test
     void given_permission_on_bus_when_run_in_flight_then_wait_raised_permission_emitted()
             throws InterruptedException {
         serve.permissionOnBus = true;
@@ -321,6 +346,10 @@ class OpenCodeAdapterTest {
         volatile boolean permissionOnBus;
         /** 权限帧已写出（message 响应等它——保证 watcher 先于 run 结束检出）。 */
         volatile boolean permissionDelivered;
+        /** 权限挂起阻塞 message（引擎真实形态：agent 等批复）；GET /permission 列出挂起。 */
+        volatile boolean permissionBlocksMessage;
+        /** 已批复的权限决策（once/reject；message 阻塞的放行信号）。 */
+        volatile String permissionDecision;
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -345,6 +374,10 @@ class OpenCodeAdapterTest {
                         while (!permissionDelivered) {
                             Thread.sleep(20);
                         }
+                    }
+                    if (permissionBlocksMessage) {
+                        // agent 撞权限 ask：挂起等批复（平台 settle 或直批引擎放行）
+                        awaitPermissionDecision();
                     }
                     if (failMessages) {
                         respond(exchange, 500, "{\"name\":\"UnknownError\",\"data\":{\"message\":\"boom\"}}");
@@ -371,8 +404,20 @@ class OpenCodeAdapterTest {
                 } else if (path.startsWith("/question/") && path.endsWith("/reply")) {
                     lastReplyBody = mapper.readTree(drain(exchange));
                     respond(exchange, 200, "{}");
+                } else if (path.equals("/permission")) {
+                    // 1.18 列表端点：挂起中的权限（批复后即消失）
+                    if (!permissionBlocksMessage || permissionDecision != null) {
+                        respond(exchange, 200, "[]");
+                        return;
+                    }
+                    respond(exchange, 200, """
+                            [{"id":"per_env_1","sessionID":"%s","messageID":"msg_1",
+                              "type":"read","title":"读取 /workspace/.env",
+                              "metadata":{},"time":{"created":1}}]
+                            """.formatted(SESSION_ID).replace("\n", ""));
                 } else if (path.contains("/permissions/")) {
                     lastPermissionBody = mapper.readTree(drain(exchange));
+                    permissionDecision = lastPermissionBody.path("response").asText();
                     respond(exchange, 200, "{}");
                 } else if (path.equals("/session/" + SESSION_ID + "/abort")) {
                     abortCalls.add(SESSION_ID);
@@ -385,6 +430,14 @@ class OpenCodeAdapterTest {
                 }
             } catch (Exception e) {
                 respond(exchange, 500, "{}");
+            }
+        }
+
+        /** 权限阻塞的放行等待（带兜底时限：批复丢失也不至于挂死测试进程）。 */
+        private void awaitPermissionDecision() throws InterruptedException {
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (permissionDecision == null && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
             }
         }
 
