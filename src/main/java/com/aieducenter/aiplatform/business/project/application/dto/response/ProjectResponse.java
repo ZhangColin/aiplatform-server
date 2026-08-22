@@ -2,6 +2,7 @@ package com.aieducenter.aiplatform.business.project.application.dto.response;
 
 import java.time.LocalDateTime;
 
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatus;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
 
 /**
@@ -15,8 +16,8 @@ import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
  * @param workspaceId   dev 工作区标识（exec/会话寻址锚点）
  * @param stage         期当前阶段名（无期 = 空）
  * @param stageLabel    阶段展示标签
- * @param status        派生项目状态：IN_PROGRESS（有 OPEN 期）/ DELIVERED（无）
- * @param statusLabel   派生状态名
+ * @param status        派生项目状态（code）：IN_PROGRESS（有 OPEN 期）/ DELIVERED
+ * @param statusName    派生状态名
  * @param stageTaskCount 当前阶段任务计数（门禁输入）
  * @param archived      是否已归档（单向终点，动作归片5c）
  * @param createdAt     创建时间
@@ -30,15 +31,10 @@ public record ProjectResponse(
         String workspaceId,
         String stage,
         String stageLabel,
-        String status,
-        String statusLabel,
+        ProjectStatus status,
+        String statusName,
         Integer stageTaskCount,
         Boolean archived,
         LocalDateTime createdAt
 ) {
-
-    /** 派生项目状态（A3 §1/§4：有无 OPEN 期的投影；归档是真实动作，优先于派生）。 */
-    public static final String STATUS_IN_PROGRESS = "IN_PROGRESS";
-    public static final String STATUS_DELIVERED = "DELIVERED";
-    public static final String STATUS_ARCHIVED = "ARCHIVED";
 }

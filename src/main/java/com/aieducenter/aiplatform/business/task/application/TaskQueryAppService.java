@@ -219,9 +219,9 @@ public class TaskQueryAppService {
 
     private TaskResponse toResponse(Task task, String assigneeName) {
         return new TaskResponse(task.getId().toString(), task.getProjectId().toString(),
-                task.getType().getCode(), task.getType().getName(), task.getTitle(),
+                task.getType(), task.getType().getName(), task.getTitle(),
                 task.getContent(), task.getAssigneeAccountId(), assigneeName,
-                task.getStatus().getCode(), task.getStatus().getName(), task.getWaitId(),
+                task.getStatus(), task.getStatus().getName(), task.getWaitId(),
                 payloadAsMap(task), task.getRejectReason(), task.getRejectedAt(),
                 task.getConfirmedAt(), task.getCreatedAt(), task.getUpdatedAt());
     }
@@ -246,7 +246,7 @@ public class TaskQueryAppService {
         }
         return new TaskCardResponse(task.getId().toString(), task.getProjectId().toString(),
                 new TaskCardResponse.ProjectBrief(brief.name(), brief.previewUrl()),
-                task.getTitle(), task.getContent(), task.getStatus().getCode(),
+                task.getTitle(), task.getContent(), task.getStatus(),
                 task.getStatus().getName(), task.getRejectReason(), task.getRejectedAt(),
                 task.getCreatedAt());
     }
@@ -259,8 +259,8 @@ public class TaskQueryAppService {
     private static BugResponse toBugResponse(Bug bug) {
         return new BugResponse(bug.getId().toString(), bug.getProjectId().toString(),
                 bug.getSourceTaskId().toString(), bug.getTitle(), bug.getDescription(),
-                bug.getReproSteps(), bug.getSeverity().getCode(), bug.getSeverity().getName(),
-                bug.getStatus().getCode(), bug.getStatus().getName(), bug.getFixRunId(),
+                bug.getReproSteps(), bug.getSeverity(), bug.getSeverity().getName(),
+                bug.getStatus(), bug.getStatus().getName(), bug.getFixRunId(),
                 bug.getFixNote(), bug.getClosedReason(), bug.getCreatedAt(),
                 bug.getUpdatedAt());
     }

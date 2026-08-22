@@ -25,6 +25,8 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatus;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatusFilter;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
 import com.aieducenter.aiplatform.business.project.domain.port.OpenBugQueryPort;
@@ -173,7 +175,7 @@ class ProjectQueryAppServiceTest {
         // 收口后的期位置回溯（A3 §5）：stage=CLOSED，派生已交付，无门
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_CLOSED);
         assertThat(response.stageLabel()).isEqualTo("关闭");
-        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_DELIVERED);
+        assertThat(response.status()).isEqualTo(ProjectStatus.DELIVERED);
         assertThat(response.stageTaskCount()).isNull();
         assertThat(response.gate()).isNull();
     }
@@ -201,8 +203,7 @@ class ProjectQueryAppServiceTest {
         assertThat(list).extracting(ProjectResponse::name)
                 .containsExactly("新项目（无期）", "老项目");
         assertThat(list).extracting(ProjectResponse::status)
-                .containsExactly(ProjectResponse.STATUS_DELIVERED,
-                        ProjectResponse.STATUS_IN_PROGRESS);
+                .containsExactly(ProjectStatus.DELIVERED, ProjectStatus.IN_PROGRESS);
     }
 
     @Test
@@ -213,7 +214,7 @@ class ProjectQueryAppServiceTest {
         archived.archive();
         projectRepository.save(archived);
 
-        assertThat(appService.list("active")).extracting(ProjectResponse::id)
+        assertThat(appService.list(ProjectStatusFilter.ACTIVE)).extracting(ProjectResponse::id)
                 .containsExactly(active.toString());
     }
 
@@ -224,10 +225,10 @@ class ProjectQueryAppServiceTest {
         archived.archive();
         projectRepository.save(archived);
 
-        assertThat(appService.list("archived")).extracting(ProjectResponse::id)
+        assertThat(appService.list(ProjectStatusFilter.ARCHIVED)).extracting(ProjectResponse::id)
                 .containsExactly(archived.getId().toString());
-        assertThat(appService.list("archived"))
-                .allMatch(project -> project.status().equals(ProjectResponse.STATUS_ARCHIVED));
+        assertThat(appService.list(ProjectStatusFilter.ARCHIVED))
+                .allMatch(project -> project.status() == ProjectStatus.ARCHIVED);
     }
 
     @Test
@@ -240,7 +241,7 @@ class ProjectQueryAppServiceTest {
         Long neither = persistedProjectWithIteration(ProjectMainChain.STAGE_DEV, 0, 8108L).getId();
         when(agentWaitAppService.pendingWorkspaceIds()).thenReturn(Set.of(8107L));
 
-        assertThat(appService.list("pending")).extracting(ProjectResponse::id)
+        assertThat(appService.list(ProjectStatusFilter.PENDING)).extracting(ProjectResponse::id)
                 .containsExactlyInAnyOrder(gateReady.toString(), waitPending.toString())
                 .doesNotContain(neither.toString());
     }
@@ -253,15 +254,11 @@ class ProjectQueryAppServiceTest {
         projectRepository.save(archived);
         when(agentWaitAppService.pendingWorkspaceIds()).thenReturn(Set.of(8109L));
 
-        assertThat(appService.list("pending")).isEmpty();
+        assertThat(appService.list(ProjectStatusFilter.PENDING)).isEmpty();
     }
 
-    @Test
-    void given_unknown_filter_when_list_then_prj_014() {
-        assertThatThrownBy(() -> appService.list("bogus"))
-                .isInstanceOf(ApplicationException.class)
-                .hasMessageContaining(ProjectMessage.PROJECT_FILTER_UNKNOWN.message());
-    }
+    // 非法过滤 code 的 400 PRJ_014 口径在端点层（ProjectControllerTest 兜底测试）；
+    // 枚举签名后应用层不再可能收到非法值。
 
     // ---------- usage ----------
 

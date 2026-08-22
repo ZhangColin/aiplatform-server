@@ -88,8 +88,8 @@ class ProjectAgentTaskAppServiceTest {
         ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
                 new ProjectAgentTaskCommand("梳理需求", null));
 
-        assertThat(response.role()).isEqualTo("BA");
-        assertThat(response.roleLabel()).isEqualTo("需求分析师");
+        assertThat(response.role()).isEqualTo(RolePreset.BA);
+        assertThat(response.roleName()).isEqualTo("需求分析师");
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_BA);
         assertThat(response.runId()).isEqualTo("run-1");
         assertThat(response.accepted()).isTrue();
@@ -134,8 +134,8 @@ class ProjectAgentTaskAppServiceTest {
         ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
                 new ProjectAgentTaskCommand("按 PRD 开发", RolePreset.DEV));
 
-        assertThat(response.role()).isEqualTo("DEV");
-        assertThat(response.roleLabel()).isEqualTo("开发工程师");
+        assertThat(response.role()).isEqualTo(RolePreset.DEV);
+        assertThat(response.roleName()).isEqualTo("开发工程师");
         ArgumentCaptor<AgentTaskDispatchCommand> command =
                 ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
         verify(agentTaskAppService).dispatch(anyString(), command.capture(), any());
@@ -177,7 +177,7 @@ class ProjectAgentTaskAppServiceTest {
         ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
                 new ProjectAgentTaskCommand("修个 bug", RolePreset.DEV));
 
-        assertThat(response.role()).isEqualTo("DEV");
+        assertThat(response.role()).isEqualTo(RolePreset.DEV);
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_CLOSED);
         assertThat(iterationRepository.findByProjectIdAndStatus(project.getId(),
                 IterationStatus.OPEN)).isEmpty();
@@ -211,7 +211,7 @@ class ProjectAgentTaskAppServiceTest {
         Iteration iteration = openIteration(project);
         assertThat(iteration.getStage()).isEqualTo(ProjectMainChain.STAGE_TEST);
         assertThat(iteration.getStageTaskCount()).isEqualTo(1);
-        assertThat(response.role()).isEqualTo("TEST");
+        assertThat(response.role()).isEqualTo(RolePreset.TEST);
 
         // SSE stage-changed（编排触发：无 approved/rejected 标记）
         ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);

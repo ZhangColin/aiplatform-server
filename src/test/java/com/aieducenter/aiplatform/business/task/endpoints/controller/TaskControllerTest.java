@@ -28,7 +28,9 @@ import com.aieducenter.aiplatform.business.task.application.dto.response.TaskCar
 import com.aieducenter.aiplatform.business.task.application.dto.response.TaskDetailResponse;
 import com.aieducenter.aiplatform.business.task.application.dto.response.TaskResponse;
 import com.aieducenter.aiplatform.business.task.domain.enums.BugSeverity;
+import com.aieducenter.aiplatform.business.task.domain.enums.BugStatus;
 import com.aieducenter.aiplatform.business.task.domain.enums.TaskStatus;
+import com.aieducenter.aiplatform.business.task.domain.enums.TaskType;
 import com.aieducenter.aiplatform.business.task.domain.error.TaskMessage;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -122,7 +124,7 @@ class TaskControllerTest {
     void given_my_tasks_when_list_then_cards_with_project_brief() throws Exception {
         when(queryAppService.myTasks()).thenReturn(List.of(new TaskCardResponse("t1", "9001",
                 new TaskCardResponse.ProjectBrief("官网项目", "http://localhost:30080/"),
-                "回归测试", "全量回归", TaskStatus.PUBLISHED.getCode(), "已发布",
+                "回归测试", "全量回归", TaskStatus.PUBLISHED, "已发布",
                 null, null, LocalDateTime.of(2026, 8, 22, 8, 0))));
 
         performAsUser(get("/api/tasks"))
@@ -139,7 +141,7 @@ class TaskControllerTest {
                 taskResponse("t1"),
                 new TaskCardResponse.ProjectBrief("官网项目", null),
                 List.of(new BugResponse("b1", "9001", "t1", "登录 500", "描述", "步骤",
-                        BugSeverity.CRITICAL.getCode(), "严重", 1, "待修复",
+                        BugSeverity.CRITICAL, "严重", BugStatus.OPEN, "待修复",
                         null, null, null, LocalDateTime.of(2026, 8, 22, 8, 0),
                         LocalDateTime.of(2026, 8, 22, 8, 0)))));
 
@@ -254,8 +256,8 @@ class TaskControllerTest {
     @Test
     void given_project_bugs_when_list_then_envelope() throws Exception {
         when(queryAppService.bugs("9001")).thenReturn(List.of(new BugResponse("b1", "9001",
-                "t1", "登录 500", null, null, BugSeverity.CRITICAL.getCode(), "严重",
-                1, "待修复", null, null, null,
+                "t1", "登录 500", null, null, BugSeverity.CRITICAL, "严重",
+                BugStatus.OPEN, "待修复", null, null, null,
                 LocalDateTime.of(2026, 8, 22, 8, 0), LocalDateTime.of(2026, 8, 22, 8, 0))));
 
         performAsUser(get("/api/projects/9001/bugs"))
@@ -268,8 +270,8 @@ class TaskControllerTest {
     // ---------- 测试数据 ----------
 
     private static TaskResponse taskResponse(String taskId) {
-        return new TaskResponse(taskId, "9001", 1, "测试任务", "回归测试", "全量回归",
-                4243L, "外包测试", TaskStatus.PUBLISHED.getCode(), "已发布", null,
+        return new TaskResponse(taskId, "9001", TaskType.TEST, "测试任务", "回归测试", "全量回归",
+                4243L, "外包测试", TaskStatus.PUBLISHED, "已发布", null,
                 null, null, null, null, LocalDateTime.of(2026, 8, 22, 8, 0),
                 LocalDateTime.of(2026, 8, 22, 8, 0));
     }

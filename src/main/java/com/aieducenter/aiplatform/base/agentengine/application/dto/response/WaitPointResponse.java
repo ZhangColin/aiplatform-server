@@ -9,7 +9,8 @@ import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
 
 /**
  * 等待点响应（A1 §1.1 WaitPoint 形）：waitId 为业务层引用键（转任务/回填），
- * body 是引擎载荷原样（底座不解释，前端按 kind 自行取用）。
+ * body 是引擎载荷原样（底座不解释，前端按 kind 自行取用）。枚举字段以
+ * Integer code 序列化（BaseEnum 约定），xxxName 补显示名（枚举为 null 时同 null）。
  */
 public record WaitPointResponse(
         String waitId,
@@ -18,10 +19,19 @@ public record WaitPointResponse(
         String runId,
         String engineRef,
         WaitKind kind,
+        String kindName,
         WaitStatus status,
+        String statusName,
         String summary,
         Map<String, Object> body,
         WaitOutcome settleOutcome,
+        String settleOutcomeName,
         Instant raisedAt,
         Instant settledAt) {
+
+    public WaitPointResponse {
+        kindName = kind == null ? null : kind.getName();
+        statusName = status == null ? null : status.getName();
+        settleOutcomeName = settleOutcome == null ? null : settleOutcome.getName();
+    }
 }

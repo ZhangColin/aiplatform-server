@@ -220,7 +220,7 @@ class TodoAppServiceTest {
     private static WaitPointResponse wait(String waitId, String workspaceId, WaitKind kind,
                                           Instant raisedAt) {
         return new WaitPointResponse(waitId, workspaceId, "ses_1", "run-1", "ref_1",
-                kind, WaitStatus.PENDING, "智能体产出的 summary", null, null, raisedAt,
-                null);
+                kind, null, WaitStatus.PENDING, null, "智能体产出的 summary", null,
+                null, null, raisedAt, null);
     }
 }

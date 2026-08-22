@@ -2,6 +2,8 @@ package com.aieducenter.aiplatform.business.task.application.dto.response;
 
 import java.time.LocalDateTime;
 
+import com.aieducenter.aiplatform.business.task.domain.enums.TaskStatus;
+
 /**
  * 任务卡片响应（opc 指派清单 {@code GET /api/tasks}，A4 §6/§7）：assignee=me
  * 跨项目，卡片带**最小项目上下文**（项目名 + 预览地址必带——OPC 测试要看
@@ -13,7 +15,7 @@ public record TaskCardResponse(
         ProjectBrief project,
         String title,
         String content,
-        Integer status,
+        TaskStatus status,
         String statusName,
         String rejectReason,
         LocalDateTime rejectedAt,

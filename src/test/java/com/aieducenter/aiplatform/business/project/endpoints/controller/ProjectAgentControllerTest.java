@@ -26,6 +26,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.command.Proje
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectWaitSettleCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectWaitResponse;
+import com.aieducenter.aiplatform.business.project.domain.model.RolePreset;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -33,6 +34,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -65,7 +67,7 @@ class ProjectAgentControllerTest {
     @Test
     void given_task_command_when_dispatch_then_run_id_returned() throws Exception {
         when(taskAppService.dispatchTask(eq(100L), any(ProjectAgentTaskCommand.class)))
-                .thenReturn(new ProjectAgentTaskResponse("run-9", "ses-9", "opencode", "DEV",
+                .thenReturn(new ProjectAgentTaskResponse("run-9", "ses-9", "opencode", RolePreset.DEV,
                         "开发工程师", "DEV", true));
 
         performAsUser(post("/api/projects/100/agent/task")
@@ -74,7 +76,8 @@ class ProjectAgentControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.runId").value("run-9"))
                 .andExpect(jsonPath("$.data.sessionId").value("ses-9"))
-                .andExpect(jsonPath("$.data.role").value("DEV"))
+                .andExpect(jsonPath("$.data.role").value(2)) // DEV → Integer code
+                .andExpect(jsonPath("$.data.roleName").value("开发工程师"))
                 .andExpect(jsonPath("$.data.accepted").value(true));
     }
 
@@ -101,14 +104,18 @@ class ProjectAgentControllerTest {
     @Test
     void given_pending_waits_when_list_then_bridged() throws Exception {
         when(waitAppService.pendingWaits(100L)).thenReturn(List.of(
-                new ProjectWaitResponse("wait-1", WaitKind.QUESTION, WaitStatus.PENDING,
-                        "用哪个框架?", "ses-9", "run-9", "que_1",
-                        Map.of("options", List.of("React", "Vue")), null, null, null)));
+                new ProjectWaitResponse("wait-1", WaitKind.QUESTION, null, WaitStatus.PENDING,
+                        null, "用哪个框架?", "ses-9", "run-9", "que_1",
+                        Map.of("options", List.of("React", "Vue")), null, null, null,
+                        null)));
 
         performAsUser(get("/api/projects/100/agent/waits"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].waitId").value("wait-1"))
                 .andExpect(jsonPath("$.data[0].kind").value(1)) // BaseEnum → Integer code（QUESTION）
+                .andExpect(jsonPath("$.data[0].kindName").value("问答"))
+                .andExpect(jsonPath("$.data[0].statusName").value("待处理"))
+                .andExpect(jsonPath("$.data[0].settleOutcomeName").value(nullValue()))
                 .andExpect(jsonPath("$.data[0].body.options[0]").value("React"));
     }
 
@@ -150,14 +157,15 @@ class ProjectAgentControllerTest {
     @Test
     void given_task_without_role_param_when_dispatch_then_role_omitted() throws Exception {
         when(taskAppService.dispatchTask(eq(100L), any(ProjectAgentTaskCommand.class)))
-                .thenReturn(new ProjectAgentTaskResponse("run-10", null, "opencode", "BA",
+                .thenReturn(new ProjectAgentTaskResponse("run-10", null, "opencode", RolePreset.BA,
                         "需求分析师", "BA", false));
 
         performAsUser(post("/api/projects/100/agent/task")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"prompt\":\"梳理需求\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.role").value("BA"));
+                .andExpect(jsonPath("$.data.role").value(1)) // BA → Integer code
+                .andExpect(jsonPath("$.data.roleName").value("需求分析师"));
         // role 缺省透传为空（阶段默认角色由应用层解析）
         verify(taskAppService).dispatchTask(eq(100L),
                 argThat(cmd -> cmd.role() == null));

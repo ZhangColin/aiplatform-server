@@ -8,6 +8,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,6 +20,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import com.cartisan.web.response.ApiResponse;
 
@@ -35,6 +37,8 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatusFilter;
+import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 
 /**
  * 项目主链 REST 面（demo ProjectController 的重写，B0 §2 片5）：对话建项目
@@ -74,19 +78,31 @@ public class ProjectController {
 
     @GetMapping
     @Operation(summary = "项目列表（状态过滤）",
-            description = "创建时间倒序。status 过滤：active（进行中）/ pending（存在 dev 待办：门就绪或"
-                    + "等待点待处理）/ archived（已归档）；缺省 all。不合法取值 400 PRJ_014")
+            description = "创建时间倒序。status 过滤（Integer code）：1=ACTIVE（进行中）/ 2=PENDING"
+                    + "（存在 dev 待办：门就绪或等待点待处理）/ 3=ARCHIVED（已归档）；缺省 all。"
+                    + "不合法取值 400 PRJ_014")
     public ApiResponse<List<ProjectResponse>> list(
-            @RequestParam(required = false) String status) {
+            @RequestParam(required = false) ProjectStatusFilter status) {
         return ApiResponse.ok(queryAppService.list(status));
+    }
+
+    /**
+     * status 绑定失败的兜底（#34）：非法 code/非数值在本层就是 400，映射回
+     * PRJ_014 保持既有错误口径（本 controller 唯一可绑定枚举参数是 status，
+     * 兜底不越界）。
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResponse<Void>> handleStatusMismatch() {
+        return ResponseEntity.badRequest()
+                .body(ApiResponse.error(ProjectMessage.PROJECT_FILTER_UNKNOWN));
     }
 
     @GetMapping("/{id}")
     @Operation(summary = "项目详情（期位置 + 主链定义数据 + 门就绪 + 派生状态）",
             description = "前端渲染进度条与点亮按钮的全部数据面（A3 §5）：stages = 阶段序列"
                     + "（主链定义数据，过程演化 UI 少改）；gate = {actor, ready}（计数门禁 ∧"
-                    + "业务谓词，无门段/已收口为 null）；status = IN_PROGRESS/DELIVERED/ARCHIVED"
-                    + "（有无 OPEN 期的派生投影，归档优先）")
+                    + "业务谓词，无门段/已收口为 null）；status = 派生项目状态（Integer code："
+                    + "1=开发中 2=已交付 3=已归档，有无 OPEN 期的投影，归档优先）")
     public ApiResponse<ProjectDetailResponse> get(@PathVariable String id) {
         return ApiResponse.ok(queryAppService.detail(parseId(id)));
     }

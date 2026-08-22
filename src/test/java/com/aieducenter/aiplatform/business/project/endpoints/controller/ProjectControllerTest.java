@@ -12,11 +12,14 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.RequestBuilder;
+import org.springframework.format.FormatterRegistry;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.core.exception.DomainException;
+import com.cartisan.web.config.BaseEnumConverter;
 import com.cartisan.web.exception.GlobalExceptionHandler;
 
 import com.aieducenter.aiplatform.base.metering.domain.model.TokenUsage;
@@ -33,6 +36,8 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
 import com.aieducenter.aiplatform.business.project.domain.enums.DemandEntryKind;
 import com.aieducenter.aiplatform.business.project.domain.enums.DemandSource;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatus;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatusFilter;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 
@@ -58,6 +63,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @WebMvcTest(ProjectController.class)
 @Import({ProjectControllerTest.ExceptionAdviceConfig.class,
+        ProjectControllerTest.EnumParamBindingConfig.class,
         com.cartisan.web.config.JacksonConfiguration.class})
 class ProjectControllerTest {
 
@@ -86,8 +92,8 @@ class ProjectControllerTest {
     @Test
     void given_valid_command_when_create_then_wrapped_with_ba_run() throws Exception {
         when(appService.create(any())).thenReturn(
-                new ProjectCreatedResponse(detailOf("100", ProjectResponse.STATUS_IN_PROGRESS,
-                        "开发中", "BA", 0, false), "run-1", true));
+                new ProjectCreatedResponse(detailOf("100", ProjectStatus.IN_PROGRESS,
+                        "BA", 0, false), "run-1", true));
 
         performAsUser(post("/api/projects")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -98,7 +104,8 @@ class ProjectControllerTest {
                 .andExpect(jsonPath("$.data.project.id").value("100"))
                 .andExpect(jsonPath("$.data.project.type").value(1)) // BaseEnum → Integer code
                 .andExpect(jsonPath("$.data.project.stage").value("BA"))
-                .andExpect(jsonPath("$.data.project.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.data.project.status").value(1)) // IN_PROGRESS → code
+                .andExpect(jsonPath("$.data.project.statusName").value("开发中"))
                 .andExpect(jsonPath("$.data.runId").value("run-1"))
                 .andExpect(jsonPath("$.data.accepted").value(true));
         verify(appService).create(argThat(cmd -> "做一个官网".equals(cmd.requirement())));
@@ -116,33 +123,36 @@ class ProjectControllerTest {
     void given_projects_when_list_then_wrapped_array() throws Exception {
         when(queryAppService.list(null)).thenReturn(List.of(new ProjectResponse("100", "官网",
                 ProjectType.WEBSITE, "官网", "opencode", "900", null, null,
-                ProjectResponse.STATUS_DELIVERED, "已交付", null, false, null)));
+                ProjectStatus.DELIVERED, "已交付", null, false, null)));
 
         performAsUser(get("/api/projects"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].id").value("100"))
-                .andExpect(jsonPath("$.data[0].status").value("DELIVERED"));
+                .andExpect(jsonPath("$.data[0].status").value(2)) // DELIVERED → code
+                .andExpect(jsonPath("$.data[0].statusName").value("已交付"));
     }
 
     @Test
     void given_status_filter_when_list_then_passed_through() throws Exception {
-        when(queryAppService.list("active")).thenReturn(List.of());
+        when(queryAppService.list(ProjectStatusFilter.ACTIVE)).thenReturn(List.of());
 
-        performAsUser(get("/api/projects").param("status", "active"))
+        performAsUser(get("/api/projects").param("status", "1")) // ACTIVE → Integer code
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data").isEmpty());
-        verify(queryAppService).list("active");
+        verify(queryAppService).list(ProjectStatusFilter.ACTIVE);
     }
 
     @Test
     void given_unknown_filter_when_list_then_prj_014_as_400() throws Exception {
-        when(queryAppService.list("bogus"))
-                .thenThrow(new ApplicationException(ProjectMessage.PROJECT_FILTER_UNKNOWN));
-
-        performAsUser(get("/api/projects").param("status", "bogus"))
+        // 非法取值（未知 code / 非数值）在绑定层即 400 PRJ_014，应用服务不被触达
+        performAsUser(get("/api/projects").param("status", "99"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.message").value("无效的项目列表状态过滤参数"));
+        performAsUser(get("/api/projects").param("status", "active"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("无效的项目列表状态过滤参数"));
+        verify(queryAppService, never()).list(any());
     }
 
     @Test
@@ -150,7 +160,7 @@ class ProjectControllerTest {
         when(queryAppService.detail(100L)).thenReturn(
                 new ProjectDetailResponse("100", "官网 demo", ProjectType.WEBSITE, "官网",
                         "opencode", "900", "BA", "需求梳理",
-                        ProjectResponse.STATUS_IN_PROGRESS, "开发中", 0, false,
+                        ProjectStatus.IN_PROGRESS, "开发中", 0, false,
                         LocalDateTime.of(2026, 8, 22, 10, 0),
                         List.of(new ProjectDetailResponse.StageView("BA", "需求梳理", "BA",
                                 "USER", false),
@@ -196,7 +206,7 @@ class ProjectControllerTest {
     @Test
     void given_gate_ready_when_approve_then_advanced_project_returned() throws Exception {
         when(gateAppService.approve(100L)).thenReturn(
-                detailOf("100", ProjectResponse.STATUS_IN_PROGRESS, "开发中", "DEMO", 0, false));
+                detailOf("100", ProjectStatus.IN_PROGRESS, "DEMO", 0, false));
 
         performAsUser(post("/api/projects/100/stage/approve"))
                 .andExpect(status().isOk())
@@ -219,7 +229,7 @@ class ProjectControllerTest {
     @Test
     void given_reason_when_reject_then_passed_through() throws Exception {
         when(gateAppService.reject(eq(100L), argThat("布局不对"::equals)))
-                .thenReturn(detailOf("100", ProjectResponse.STATUS_IN_PROGRESS, "开发中",
+                .thenReturn(detailOf("100", ProjectStatus.IN_PROGRESS,
                         "BA", 1, false));
 
         performAsUser(post("/api/projects/100/stage/reject")
@@ -287,11 +297,12 @@ class ProjectControllerTest {
     @Test
     void given_unarchived_when_archive_then_detail_returned() throws Exception {
         when(appService.archive(100L)).thenReturn(
-                detailOf("100", ProjectResponse.STATUS_ARCHIVED, "已归档", "BA", 1, true));
+                detailOf("100", ProjectStatus.ARCHIVED, "BA", 1, true));
 
         performAsUser(post("/api/projects/100/archive"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("ARCHIVED"))
+                .andExpect(jsonPath("$.data.status").value(3)) // ARCHIVED → code
+                .andExpect(jsonPath("$.data.statusName").value("已归档"))
                 .andExpect(jsonPath("$.data.archived").value(true));
     }
 
@@ -350,11 +361,11 @@ class ProjectControllerTest {
     // ---------- 夹具 ----------
 
     /** 详情夹具（列表字段 + 主链定义 + 门就绪的最小可用形态）。 */
-    private ProjectDetailResponse detailOf(String id, String status, String statusLabel,
+    private ProjectDetailResponse detailOf(String id, ProjectStatus status,
                                            String stage, Integer taskCount, boolean archived) {
         return new ProjectDetailResponse(id, "官网 demo", ProjectType.WEBSITE, "官网",
-                "opencode", "900", stage, stage, status, statusLabel, taskCount, archived,
-                LocalDateTime.of(2026, 8, 22, 10, 0), List.of(), null);
+                "opencode", "900", stage, stage, status, status.getName(), taskCount,
+                archived, LocalDateTime.of(2026, 8, 22, 10, 0), List.of(), null);
     }
 
     /**
@@ -366,6 +377,20 @@ class ProjectControllerTest {
         @Bean
         public GlobalExceptionHandler globalExceptionHandler() {
             return new GlobalExceptionHandler();
+        }
+    }
+
+    /**
+     * query param 的 BaseEnum 按 code 绑定走 CartisanWebAutoConfiguration
+     * 注册的 converter factory（切片不含该 autoconfig，此处对齐注册——
+     * status=1 → ProjectStatusFilter.ACTIVE）。
+     */
+    @org.springframework.boot.test.context.TestConfiguration(proxyBeanMethods = false)
+    static class EnumParamBindingConfig implements WebMvcConfigurer {
+
+        @Override
+        public void addFormatters(FormatterRegistry registry) {
+            registry.addConverterFactory(new BaseEnumConverter());
         }
     }
 }

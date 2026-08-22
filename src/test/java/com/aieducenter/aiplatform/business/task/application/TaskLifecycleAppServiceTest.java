@@ -118,7 +118,7 @@ class TaskLifecycleAppServiceTest {
         TaskResponse response = asUser(DEV_OWNER, () -> appService.create(projectId.toString(),
                 new CreateTaskCommand("首轮回归", "全量回归 + 提交 Bug 清单", assignee)));
 
-        assertThat(response.status()).isEqualTo(TaskStatus.PUBLISHED.getCode());
+        assertThat(response.status()).isEqualByComparingTo(TaskStatus.PUBLISHED);
         assertThat(openIteration(projectId).getStage())
                 .isEqualTo(ProjectMainChain.STAGE_TEST); // 开发→测试唯一触发
         assertThat(openIteration(projectId).getStageTaskCount()).isZero(); // 人任务不计数
@@ -196,7 +196,7 @@ class TaskLifecycleAppServiceTest {
         TaskDetailResponse detail = asUser(DEV_OWNER, () -> appService.confirm(taskId));
 
         // 任务终态
-        assertThat(detail.task().status()).isEqualTo(TaskStatus.CONFIRMED.getCode());
+        assertThat(detail.task().status()).isEqualByComparingTo(TaskStatus.CONFIRMED);
         assertThat(detail.task().confirmedAt()).isNotNull();
 
         // Bug 一事务内入库：OPEN、severity/溯源键齐
@@ -384,7 +384,7 @@ class TaskLifecycleAppServiceTest {
                 new SubmitTaskCommand("首轮", List.of(), null)));
 
         TaskResponse rejected = asUser(DEV_OWNER, () -> appService.reject(taskId, "缺登录用例"));
-        assertThat(rejected.status()).isEqualTo(TaskStatus.IN_PROGRESS.getCode());
+        assertThat(rejected.status()).isEqualByComparingTo(TaskStatus.IN_PROGRESS);
         assertThat(rejected.rejectReason()).isEqualTo("缺登录用例");
         assertThat(rejected.rejectedAt()).isNotNull();
         assertThatThrownBy(() -> asUser(DEV_OWNER, () -> appService.reject(taskId, " "))) // reason 必填
@@ -393,7 +393,7 @@ class TaskLifecycleAppServiceTest {
         // 重新提交：驳回字段清空、离开 TASK_REJECTED 判定
         TaskResponse resubmitted = asUser(assignee, () -> appService.submit(taskId,
                 new SubmitTaskCommand("补跑登录", List.of(), null)));
-        assertThat(resubmitted.status()).isEqualTo(TaskStatus.SUBMITTED.getCode());
+        assertThat(resubmitted.status()).isEqualByComparingTo(TaskStatus.SUBMITTED);
         assertThat(resubmitted.rejectReason()).isNull();
         assertThat(resubmitted.rejectedAt()).isNull();
 
@@ -410,7 +410,7 @@ class TaskLifecycleAppServiceTest {
         // 已发布 → 可取消
         Long cancellable = createdTaskOf(projectId, assignee);
         assertThat(asUser(DEV_OWNER, () -> appService.cancel(cancellable)).status())
-                .isEqualTo(TaskStatus.CANCELLED.getCode());
+                .isEqualByComparingTo(TaskStatus.CANCELLED);
 
         // 已提交 → 不能取消只能驳回（docs/11 原样）
         Long submitted = submittedFirstRound(projectId, assignee, List.of());

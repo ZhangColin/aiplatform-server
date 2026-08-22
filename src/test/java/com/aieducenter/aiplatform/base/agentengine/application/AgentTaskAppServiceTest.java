@@ -298,8 +298,8 @@ class AgentTaskAppServiceTest {
         when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
         when(waitAppService.raiseFromEvent(eq(WORKSPACE_ID), any())).thenReturn(
                 new WaitPointResponse("wait-1", Long.toString(WORKSPACE_ID), "ses_new",
-                        "run-biz-1", "que_1", WaitKind.QUESTION, WaitStatus.PENDING,
-                        "用哪个框架?", Map.of(), null, Instant.EPOCH, null));
+                        "run-biz-1", "que_1", WaitKind.QUESTION, null, WaitStatus.PENDING, null,
+                        "用哪个框架?", Map.of(), null, null, Instant.EPOCH, null));
         var emitter = appServiceDelegate().subscribe(null, null, null);
 
         appService.dispatch(Long.toString(WORKSPACE_ID),

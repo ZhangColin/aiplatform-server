@@ -66,11 +66,11 @@ class ProjectWaitAppServiceTest {
         stubProject();
         when(agentWaitAppService.pendingWaits(Long.toString(WORKSPACE_ID))).thenReturn(List.of(
                 new WaitPointResponse("wait-1", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "que_1", WaitKind.QUESTION, WaitStatus.PENDING, "用哪个框架?",
-                        Map.of("options", List.of("React")), null, null, null),
+                        "que_1", WaitKind.QUESTION, null, WaitStatus.PENDING, null, "用哪个框架?",
+                        Map.of("options", List.of("React")), null, null, null, null),
                 new WaitPointResponse("wait-2", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "perm_1", WaitKind.PERMISSION, WaitStatus.PENDING, "允许写文件?",
-                        Map.of(), null, null, null)));
+                        "perm_1", WaitKind.PERMISSION, null, WaitStatus.PENDING, null, "允许写文件?",
+                        Map.of(), null, null, null, null)));
 
         List<ProjectWaitResponse> waits = appService.pendingWaits(PROJECT_ID);
 
@@ -86,8 +86,8 @@ class ProjectWaitAppServiceTest {
         stubProject();
         when(agentWaitAppService.wait("wait-1")).thenReturn(Optional.of(
                 new WaitPointResponse("wait-1", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "que_1", WaitKind.QUESTION, WaitStatus.SETTLED, "用哪个框架?",
-                        Map.of(), WaitOutcome.ANSWERED, null, null)));
+                        "que_1", WaitKind.QUESTION, null, WaitStatus.SETTLED, null, "用哪个框架?",
+                        Map.of(), WaitOutcome.ANSWERED, null, null, null)));
 
         appService.settle(PROJECT_ID, "wait-1", new ProjectWaitSettleCommand(
                 WaitSettleCommand.TYPE_ANSWER, List.of(List.of("React")), null, null));
@@ -111,8 +111,8 @@ class ProjectWaitAppServiceTest {
         stubProject();
         when(agentWaitAppService.wait("wait-2")).thenReturn(Optional.of(
                 new WaitPointResponse("wait-2", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "perm_1", WaitKind.PERMISSION, WaitStatus.SETTLED, "允许写文件?",
-                        Map.of(), WaitOutcome.DENIED, null, null)));
+                        "perm_1", WaitKind.PERMISSION, null, WaitStatus.SETTLED, null, "允许写文件?",
+                        Map.of(), WaitOutcome.DENIED, null, null, null)));
 
         appService.settle(PROJECT_ID, "wait-2", new ProjectWaitSettleCommand(
                 WaitSettleCommand.TYPE_PERMISSION, null, false, null));
@@ -128,8 +128,8 @@ class ProjectWaitAppServiceTest {
         stubProject();
         when(agentWaitAppService.wait("wait-3")).thenReturn(Optional.of(
                 new WaitPointResponse("wait-3", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "que_2", WaitKind.QUESTION, WaitStatus.PENDING, "用哪个框架?",
-                        Map.of(), null, null, null)));
+                        "que_2", WaitKind.QUESTION, null, WaitStatus.PENDING, null, "用哪个框架?",
+                        Map.of(), null, null, null, null)));
 
         appService.settle(PROJECT_ID, "wait-3", new ProjectWaitSettleCommand(
                 WaitSettleCommand.TYPE_ANSWER, List.of(List.of("Vue")), null, null));

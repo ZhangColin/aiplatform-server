@@ -4,7 +4,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Collection;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -31,6 +30,8 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatus;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatusFilter;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
 import com.aieducenter.aiplatform.business.project.domain.model.RolePreset;
@@ -40,7 +41,8 @@ import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepo
 
 /**
  * 项目读侧用例（片5c，A3 §5 / A1 §2.5）：详情（期位置 + 主链定义数据 + 门就绪 +
- * 派生状态）、列表（状态过滤 active/pending/archived/缺省 all）、用量（总量 +
+ * 派生状态）、列表（状态过滤 ACTIVE/PENDING/ARCHIVED/缺省 all，#34 收敛为
+ * Integer code）、用量（总量 +
  * 分模型 + 分角色）+ workbench 查询端口（门就绪清单 / workspaceId 寻址，A2 §5）。
  * 写侧（生命周期/门操作/需求池）各自成服务，读拼装集中一处——门就绪的裁决
  * （计数 ∧ 业务谓词）与列表 pending 派生（期门就绪 ∨ 工作区待处理等待点，A2 §63）
@@ -48,11 +50,6 @@ import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepo
  */
 @Service
 public class ProjectQueryAppService {
-
-    /** 列表状态过滤的合法取值（A2 §63 + A3 §4 补 archived；缺省 all）。 */
-    private static final String FILTER_ACTIVE = "active";
-    private static final String FILTER_PENDING = "pending";
-    private static final String FILTER_ARCHIVED = "archived";
 
     /** 任务下发时记入 dims 的角色维度键（与 ProjectAgentTaskAppService 对齐）。 */
     private static final String DIM_ROLE = "role";
@@ -95,22 +92,20 @@ public class ProjectQueryAppService {
     }
 
     /**
-     * 项目列表（创建时间倒序）+ 状态过滤：{@code active}（未归档 ∧ 有 OPEN 期）、
-     * {@code pending}（未归档 ∧ 存在 dev 待办：期门就绪 ∨ 工作区待处理等待点）、
-     * {@code archived}（已归档）；缺省 all。
-     *
-     * @throws ApplicationException PRJ_014 过滤参数不合法
+     * 项目列表（创建时间倒序）+ 状态过滤（Integer code，框架 converter 绑定）：
+     * ACTIVE（未归档 ∧ 有 OPEN 期）、PENDING（未归档 ∧ 存在 dev 待办：期门就绪
+     * ∨ 工作区待处理等待点）、ARCHIVED（已归档）；缺省 all。不合法 code 在端点
+     * 层 400 PRJ_014（project 端点层类型不匹配兜底），本层只收合法枚举。
      */
-    public List<ProjectResponse> list(String status) {
-        String filter = normalizeFilter(status);
+    public List<ProjectResponse> list(ProjectStatusFilter status) {
         // pending 一次取全量待处理工作区（跨项目待办查询面，A2 §60），不在循环里逐项目查
-        Set<Long> pendingWorkspaces = FILTER_PENDING.equals(filter)
+        Set<Long> pendingWorkspaces = status == ProjectStatusFilter.PENDING
                 ? agentWaitAppService.pendingWorkspaceIds()
                 : Set.of();
         Map<Long, List<Iteration>> iterationsByProject = iterationsByProject();
         return projectsNewestFirst().stream()
                 .filter(project -> matches(project, iterationsByProject.get(project.getId()),
-                        filter, pendingWorkspaces))
+                        status, pendingWorkspaces))
                 .map(project -> toResponse(project, Iteration
                         .currentOf(iterationsByProject.get(project.getId())).orElse(null)))
                 .toList();
@@ -295,32 +290,19 @@ public class ProjectQueryAppService {
 
     // ---------- 列表过滤 ----------
 
-    /** 过滤参数归一（空白 = 缺省 all）；不合法取值 400 PRJ_014。 */
-    private static String normalizeFilter(String status) {
-        if (status == null || status.isBlank()) {
-            return null;
-        }
-        String filter = status.strip().toLowerCase(Locale.ROOT);
-        if (!FILTER_ACTIVE.equals(filter) && !FILTER_PENDING.equals(filter)
-                && !FILTER_ARCHIVED.equals(filter)) {
-            throw new ApplicationException(ProjectMessage.PROJECT_FILTER_UNKNOWN, status);
-        }
-        return filter;
-    }
-
-    private boolean matches(Project project, List<Iteration> iterations, String filter,
-                            Set<Long> pendingWorkspaces) {
+    private boolean matches(Project project, List<Iteration> iterations,
+                            ProjectStatusFilter filter, Set<Long> pendingWorkspaces) {
         if (filter == null) {
             return true;
         }
-        if (FILTER_ARCHIVED.equals(filter)) {
+        if (filter == ProjectStatusFilter.ARCHIVED) {
             return project.getArchivedAt() != null;
         }
-        // active/pending 都是「在办」视角：归档项目不再出现（归档是单向终点，A3 §4）
+        // ACTIVE/PENDING 都是「在办」视角：归档项目不再出现（归档是单向终点，A3 §4）
         if (project.getArchivedAt() != null) {
             return false;
         }
-        if (FILTER_ACTIVE.equals(filter)) {
+        if (filter == ProjectStatusFilter.ACTIVE) {
             return Iteration.currentOf(iterations)
                     .map(iteration -> iteration.getStatus() == IterationStatus.OPEN)
                     .orElse(false);
@@ -346,7 +328,7 @@ public class ProjectQueryAppService {
                 .toList();
         return new ProjectDetailResponse(base.id(), base.name(), base.type(), base.typeName(),
                 base.engine(), base.workspaceId(), base.stage(), base.stageLabel(),
-                base.status(), base.statusLabel(), base.stageTaskCount(), base.archived(),
+                base.status(), base.statusName(), base.stageTaskCount(), base.archived(),
                 base.createdAt(), stages, gate);
     }
 
@@ -360,6 +342,8 @@ public class ProjectQueryAppService {
         String stageLabel = stage != null
                 ? ProjectMainChain.definition().find(stage).map(StageEntry::label).orElse(null)
                 : null;
+        ProjectStatus status = archived ? ProjectStatus.ARCHIVED
+                : open ? ProjectStatus.IN_PROGRESS : ProjectStatus.DELIVERED;
         return new ProjectResponse(
                 project.getId().toString(),
                 project.getName(),
@@ -369,10 +353,8 @@ public class ProjectQueryAppService {
                 project.getWorkspaceId().toString(),
                 stage,
                 stageLabel,
-                archived ? ProjectResponse.STATUS_ARCHIVED
-                        : open ? ProjectResponse.STATUS_IN_PROGRESS
-                                : ProjectResponse.STATUS_DELIVERED,
-                archived ? "已归档" : open ? "开发中" : "已交付",
+                status,
+                status.getName(),
                 open ? iteration.getStageTaskCount() : null,
                 archived,
                 project.getCreatedAt());

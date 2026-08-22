@@ -114,7 +114,7 @@ public class ProjectAgentTaskAppService {
         }
         // stage 为下发时快照（首个测试任务的任务本身发起于开发段，计数已落测试段）
         return new ProjectAgentTaskResponse(result.runId(), result.sessionId(),
-                result.engine(), role.name(), role.getName(), stage, result.accepted());
+                result.engine(), role, role.getName(), stage, result.accepted());
     }
 
     /**

@@ -94,7 +94,7 @@ class TaskQueryAppServiceTest {
         // 最小项目上下文：项目名 + 预览地址（工作区记录未建 → 预览置 null 不炸）
         assertThat(cards.get(0).project().name()).isEqualTo("商城项目");
         assertThat(cards.get(0).project().previewUrl()).isNull();
-        assertThat(cards.get(0).status()).isEqualTo(TaskStatus.PUBLISHED.getCode());
+        assertThat(cards.get(0).status()).isEqualByComparingTo(TaskStatus.PUBLISHED);
         assertThat(cards.get(0).statusName()).isEqualTo("已发布");
     }
 

@@ -34,6 +34,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatus;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
@@ -92,7 +93,7 @@ class ProjectLifecycleAppServiceTest {
         // A2 §3 归属列：创建时填 RequestContext.userId（=accountId），v1 读路径不过滤
         stubWorkspace("9101", "aiplatform-dev-101");
         when(agentTaskAppService.dispatchTask(any(), any())).thenReturn(
-                new ProjectAgentTaskResponse("run-1", "ses-1", "opencode", "BA",
+                new ProjectAgentTaskResponse("run-1", "ses-1", "opencode", RolePreset.BA,
                         "需求分析师", ProjectMainChain.STAGE_BA, true));
 
         ProjectCreatedResponse response = RequestContext.runFor(
@@ -110,7 +111,7 @@ class ProjectLifecycleAppServiceTest {
     void given_valid_command_when_create_then_workspace_iteration_sse_and_auto_ba() {
         stubWorkspace("9100", "aiplatform-dev-100");
         when(agentTaskAppService.dispatchTask(any(), any())).thenReturn(
-                new ProjectAgentTaskResponse("run-1", "ses-1", "opencode", "BA",
+                new ProjectAgentTaskResponse("run-1", "ses-1", "opencode", RolePreset.BA,
                         "需求分析师", ProjectMainChain.STAGE_BA, true));
 
         ProjectCreatedResponse response = appService.create(
@@ -130,7 +131,7 @@ class ProjectLifecycleAppServiceTest {
         assertThat(response.project().type()).isEqualTo(ProjectType.WEBSITE); // 类型缺省官网
         assertThat(response.project().engine()).isEqualTo("opencode");
         assertThat(response.project().workspaceId()).isEqualTo("9100");
-        assertThat(response.project().status()).isEqualTo(ProjectResponse.STATUS_IN_PROGRESS);
+        assertThat(response.project().status()).isEqualTo(ProjectStatus.IN_PROGRESS);
         assertThat(response.runId()).isEqualTo("run-1"); // 自动 BA 运行标识随响应返回
         assertThat(response.accepted()).isTrue();
 
@@ -163,7 +164,7 @@ class ProjectLifecycleAppServiceTest {
     void given_blank_requirement_when_create_then_default_kickoff_prompt() {
         stubWorkspace("9101", "aiplatform-dev-101");
         when(agentTaskAppService.dispatchTask(any(), any())).thenReturn(
-                new ProjectAgentTaskResponse("run-2", "ses-2", "opencode", "BA",
+                new ProjectAgentTaskResponse("run-2", "ses-2", "opencode", RolePreset.BA,
                         "需求分析师", ProjectMainChain.STAGE_BA, true));
 
         ProjectCreatedResponse response = appService.create(
@@ -213,8 +214,8 @@ class ProjectLifecycleAppServiceTest {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT archived_at FROM prj_projects WHERE id = ?", java.sql.Timestamp.class,
                 projectId)).isNotNull();
-        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_ARCHIVED);
-        assertThat(response.statusLabel()).isEqualTo("已归档");
+        assertThat(response.status()).isEqualTo(ProjectStatus.ARCHIVED);
+        assertThat(response.statusName()).isEqualTo("已归档");
         assertThat(response.archived()).isTrue();
         // 归档不清期不清工作区（工具项目级常开）
         assertThat(iterationRepository.findByProjectId(projectId)).hasSize(1);

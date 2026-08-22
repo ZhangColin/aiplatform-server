@@ -23,6 +23,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
+import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatus;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
 import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
@@ -106,7 +107,7 @@ class ProjectGateAppServiceTest {
         assertThat(iteration.getStage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
         assertThat(iteration.getStageTaskCount()).isZero();
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
-        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_IN_PROGRESS);
+        assertThat(response.status()).isEqualTo(ProjectStatus.IN_PROGRESS);
 
         // approve 也留痕（kind=需求确认、decision=通过、account_id 记 approver）
         Map<String, Object> row = soleConfirmationRow();
@@ -205,8 +206,8 @@ class ProjectGateAppServiceTest {
         assertThat(closedRow.get("status")).isEqualTo(2);
         assertThat(closedRow.get("closed_at")).isNotNull();
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_CLOSED);
-        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_DELIVERED);
-        assertThat(response.statusLabel()).isEqualTo("已交付");
+        assertThat(response.status()).isEqualTo(ProjectStatus.DELIVERED);
+        assertThat(response.statusName()).isEqualTo("已交付");
         assertThat(response.stageTaskCount()).isNull();
 
         // 收口照常发 stage-changed（stage=关闭，前端重拉 REST，A3 §5）
@@ -257,7 +258,7 @@ class ProjectGateAppServiceTest {
 
         // 驳回一律停留当前阶段（验收驳回停留验收段，A3 §3）
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_ACCEPTANCE);
-        assertThat(response.status()).isEqualTo(ProjectResponse.STATUS_IN_PROGRESS);
+        assertThat(response.status()).isEqualTo(ProjectStatus.IN_PROGRESS);
         assertThat(openIteration(projectId).getStage()).isEqualTo(ProjectMainChain.STAGE_ACCEPTANCE);
 
         // 留痕：kind=验收、decision=驳回、reason 落库、account_id 记驳回人
@@ -346,7 +347,7 @@ class ProjectGateAppServiceTest {
 
     private void stubAutoDispatch(String runId, String stage) {
         when(agentTaskAppService.dispatchTask(anyLong(), any())).thenReturn(
-                new ProjectAgentTaskResponse(runId, "ses-1", "opencode", "DEMO",
+                new ProjectAgentTaskResponse(runId, "ses-1", "opencode", RolePreset.DEMO,
                         "原型开发工程师", stage, true));
     }
 

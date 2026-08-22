@@ -69,8 +69,8 @@ class TodoControllerTest {
         login("sid-1");
         when(agentWaitAppService.listPendingWaits()).thenReturn(List.of(
                 new WaitPointResponse("wait-1", "4242", "ses_1", "run-1", "ref_1",
-                        WaitKind.QUESTION, WaitStatus.PENDING, null, null, null,
-                        Instant.parse("2026-08-22T08:00:00Z"), null)));
+                        WaitKind.QUESTION, null, WaitStatus.PENDING, null, null, null,
+                        null, null, Instant.parse("2026-08-22T08:00:00Z"), null)));
         when(projectQueryAppService.projectIdByWorkspaceId(any()))
                 .thenReturn(Map.of(4242L, "p1"));
         when(projectQueryAppService.listGateReady()).thenReturn(List.of(

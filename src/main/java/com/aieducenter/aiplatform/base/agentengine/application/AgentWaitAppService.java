@@ -352,6 +352,7 @@ public class AgentWaitAppService {
     }
 
     private static WaitPointResponse toResponse(AgentWait wait) {
+        // *Name 随附字段由 record 紧凑构造器从枚举派生（null 传导 null），此处传 null 占位
         return new WaitPointResponse(
                 wait.getWaitId(),
                 Long.toString(wait.getWorkspaceId()),
@@ -359,10 +360,13 @@ public class AgentWaitAppService {
                 wait.getRunId(),
                 wait.getEngineRef(),
                 wait.getKind(),
+                null,
                 wait.getStatus(),
+                null,
                 wait.getSummary(),
                 wait.getBody(),
                 wait.getSettleOutcome(),
+                null,
                 wait.getRaisedAt(),
                 wait.getSettledAt());
     }

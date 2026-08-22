@@ -90,11 +90,13 @@ public class ProjectWaitAppService {
                 outcomeOf(settled.settleOutcome())));
     }
 
-    /** 底座 WaitPointResponse → 项目视角投影（projectId 来自路径不重复携带）。 */
+    /** 底座 WaitPointResponse → 项目视角投影（projectId 来自路径不重复携带；
+     *  *Name 随附由 record 紧凑构造器从枚举派生）。 */
     private static ProjectWaitResponse toResponse(WaitPointResponse wait) {
-        return new ProjectWaitResponse(wait.waitId(), wait.kind(), wait.status(),
-                wait.summary(), wait.sessionId(), wait.runId(), wait.engineRef(),
-                wait.body(), wait.settleOutcome(), wait.raisedAt(), wait.settledAt());
+        return new ProjectWaitResponse(wait.waitId(), wait.kind(), null,
+                wait.status(), null, wait.summary(), wait.sessionId(),
+                wait.runId(), wait.engineRef(), wait.body(), wait.settleOutcome(),
+                null, wait.raisedAt(), wait.settledAt());
     }
 
     private static String outcomeOf(WaitOutcome outcome) {
