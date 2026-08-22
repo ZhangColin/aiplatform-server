@@ -16,6 +16,11 @@ import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.core.exception.CartisanException;
 
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
+import com.aieducenter.aiplatform.base.knowledge.domain.model.KnowledgeSpec;
+import com.aieducenter.aiplatform.base.knowledge.domain.port.KnowledgePort;
+import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
+import com.aieducenter.aiplatform.base.workspace.application.dto.command.WorkspaceExecCommand;
+import com.aieducenter.aiplatform.base.workspace.application.dto.response.ExecResultResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
@@ -36,8 +41,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -72,6 +80,14 @@ class ProjectGateAppServiceTest {
     /** G3 业务谓词端口（#26 起真实现查 tsk_bugs；此处 mock 以便验证调用与翻态场景）。 */
     @MockitoBean
     private OpenBugQueryPort openBugQueryPort;
+
+    /** 知识端口 mock（A5 摄取挂钩验证；真实入库链路见 KnowledgeAppServiceTest）。 */
+    @MockitoBean
+    private KnowledgePort knowledgePort;
+
+    /** 工作区命令 mock（ARTIFACT 摄取读产物文件；真实 exec 见 WorkspaceLifecycle 测试）。 */
+    @MockitoBean
+    private WorkspaceLifecycleAppService workspaceLifecycleAppService;
 
     @AfterEach
     void tearDown() {
@@ -310,7 +326,84 @@ class ProjectGateAppServiceTest {
                 .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
     }
 
+    // ---------- A5 §1 摄取挂钩：FEEDBACK（门决策留痕）+ ARTIFACT（产物清单） ----------
+
+    @Test
+    void given_prd_in_workspace_when_approve_ba_then_feedback_and_artifact_indexed() {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        stubAutoDispatch("run-demo", ProjectMainChain.STAGE_DEMO);
+        stubWorkspaceFile("# PRD\n\n做一个电商官网，含购物车与结算。", 0);
+
+        appService.approve(projectId);
+
+        // 两类素材入库（A5 §1）：FEEDBACK（approve 留痕，无理由行）+ ARTIFACT（v1
+        // 仅需求梳理段 PRD.md，source_ref = {projectId}:{stage}:{文件名}，meta 带 stage）
+        ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
+        verify(knowledgePort, times(2)).index(spec.capture());
+        KnowledgeSpec feedback = spec.getAllValues().stream()
+                .filter(s -> ProjectKnowledgeAppService.KIND_FEEDBACK.equals(s.kind()))
+                .findFirst().orElseThrow();
+        assertThat(feedback.sourceRef()).isEqualTo(soleConfirmationRow().get("id").toString());
+        assertThat(feedback.title()).isEqualTo("需求确认·通过");
+        assertThat(feedback.chunks()).singleElement()
+                .isEqualTo("〔需求确认·通过〕"); // approve 无 reason，理由行省略
+        KnowledgeSpec artifact = spec.getAllValues().stream()
+                .filter(s -> ProjectKnowledgeAppService.KIND_ARTIFACT.equals(s.kind()))
+                .findFirst().orElseThrow();
+        assertThat(artifact.sourceRef()).isEqualTo(projectId + ":BA:PRD.md");
+        assertThat(artifact.title()).isEqualTo("PRD.md");
+        assertThat(artifact.chunks()).singleElement()
+                .isEqualTo("# PRD\n\n做一个电商官网，含购物车与结算。");
+        assertThat(artifact.meta()).containsEntry("stage", ProjectMainChain.STAGE_BA);
+    }
+
+    @Test
+    void given_prd_missing_when_approve_ba_then_feedback_only_artifact_degraded() {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        stubWorkspaceFile("", 1); // 文件未产出：cat 退出码非 0
+
+        appService.approve(projectId);
+
+        // 产物缺 = 降级跳过（记日志），门决策与 FEEDBACK 留痕不受影响
+        ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
+        verify(knowledgePort, times(1)).index(spec.capture());
+        assertThat(spec.getValue().kind()).isEqualTo(ProjectKnowledgeAppService.KIND_FEEDBACK);
+    }
+
+    @Test
+    void given_reason_when_reject_then_feedback_chunk_carries_reason() {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+
+        appService.reject(projectId, " 范围太大，先做 MVP ");
+
+        ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
+        verify(knowledgePort).index(spec.capture());
+        assertThat(spec.getValue().kind()).isEqualTo(ProjectKnowledgeAppService.KIND_FEEDBACK);
+        assertThat(spec.getValue().title()).isEqualTo("需求确认·驳回");
+        assertThat(spec.getValue().chunks()).singleElement()
+                .isEqualTo("〔需求确认·驳回〕理由：范围太大，先做 MVP");
+    }
+
+    @Test
+    void given_index_failure_when_approve_then_gate_kept() {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        stubWorkspaceFile("# PRD", 0);
+        doThrow(new RuntimeException("向量库写失败")).when(knowledgePort).index(any());
+
+        ProjectDetailResponse response = appService.approve(projectId);
+
+        // 摄取失败降级不炸（A5 §1）：门决策照常成立
+        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
+        assertThat(confirmationCount()).isEqualTo(1);
+    }
+
     // ---------- 测试数据 ----------
+
+    /** 工作区文件读取桩（ARTIFACT 摄取）：exitCode 非 0 = 文件缺/读取失败。 */
+    private void stubWorkspaceFile(String content, int exitCode) {
+        when(workspaceLifecycleAppService.exec(anyString(), any(WorkspaceExecCommand.class)))
+                .thenReturn(new ExecResultResponse(content, "", exitCode));
+    }
 
     private Long persistedProject() {
         return projectRepository.save(Project.create("门测试", ProjectType.WEBSITE, "opencode",
@@ -339,7 +432,7 @@ class ProjectGateAppServiceTest {
 
     private Map<String, Object> soleConfirmationRow() {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT iteration_id, kind, decision, reason, account_id, decided_at "
+                "SELECT id, iteration_id, kind, decision, reason, account_id, decided_at "
                         + "FROM prj_confirmations");
         assertThat(rows).hasSize(1);
         return rows.get(0);

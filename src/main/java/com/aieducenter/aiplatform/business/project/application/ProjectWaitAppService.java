@@ -14,6 +14,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppSer
 import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.WaitSettleCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
+import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitOutcome;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.business.identity.application.AccountAppService;
@@ -44,19 +45,22 @@ public class ProjectWaitAppService {
     private final DeferredTaskPort deferredTaskPort;
     private final ProjectQueryAppService projectQueryAppService;
     private final AccountAppService accountAppService;
+    private final ProjectKnowledgeAppService knowledgeAppService;
 
     public ProjectWaitAppService(ProjectRepository projectRepository,
                                  AgentWaitAppService agentWaitAppService,
                                  AgentStreamAppService streamAppService,
                                  DeferredTaskPort deferredTaskPort,
                                  ProjectQueryAppService projectQueryAppService,
-                                 AccountAppService accountAppService) {
+                                 AccountAppService accountAppService,
+                                 ProjectKnowledgeAppService knowledgeAppService) {
         this.projectRepository = projectRepository;
         this.agentWaitAppService = agentWaitAppService;
         this.streamAppService = streamAppService;
         this.deferredTaskPort = deferredTaskPort;
         this.projectQueryAppService = projectQueryAppService;
         this.accountAppService = accountAppService;
+        this.knowledgeAppService = knowledgeAppService;
     }
 
     /**
@@ -92,11 +96,20 @@ public class ProjectWaitAppService {
         }
 
         // SSE（副作用落定后：settle 成功才发）；runId 缺失的异常等待点只记日志跳过
-        agentWaitAppService.wait(waitId)
-                .map(ProjectWaitAppService::toResponse)
-                .filter(settled -> settled.settleOutcome() != null)
-                .ifPresentOrElse(settled -> emitWaitSettled(projectId, settled),
-                        () -> log.warn("等待点 {} 答复后读不到关闭结果，跳过 SSE 发射", waitId));
+        WaitPointResponse settled = agentWaitAppService.wait(waitId).orElse(null);
+        if (settled == null || settled.settleOutcome() == null) {
+            log.warn("等待点 {} 答复后读不到关闭结果，跳过 SSE 发射", waitId);
+            return;
+        }
+        emitWaitSettled(projectId, toResponse(settled));
+
+        // A5 §1 QA 摄取（settle(Answer) 编排处即刻，失败降级不炸）：问答对的
+        // 问题（body）与答复（answers）成纪要素材；权限答复/转任务不摄取
+        if (settled.kind() == WaitKind.QUESTION
+                && settled.settleOutcome() == WaitOutcome.ANSWERED) {
+            knowledgeAppService.indexQa(projectId, waitId, settled.body(),
+                    settled.summary(), command.answers());
+        }
     }
 
     // ---------- 内部 ----------

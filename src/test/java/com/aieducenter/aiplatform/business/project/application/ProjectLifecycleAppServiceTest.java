@@ -20,6 +20,7 @@ import com.cartisan.core.exception.CartisanException;
 import com.cartisan.core.exception.DomainException;
 
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
+import com.aieducenter.aiplatform.base.knowledge.domain.port.KnowledgePort;
 import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.CreateWorkspaceCommand;
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.WorkspaceResponse;
@@ -81,6 +82,10 @@ class ProjectLifecycleAppServiceTest {
 
     @MockitoBean
     private PlatformNotificationAppService notificationAppService;
+
+    /** 知识端口 mock（A5 §5 删除级联清理验证）。 */
+    @MockitoBean
+    private KnowledgePort knowledgePort;
 
     @AfterEach
     void tearDown() {
@@ -265,8 +270,9 @@ class ProjectLifecycleAppServiceTest {
 
         appService.delete(projectId);
 
-        // 真删级联：工作区销毁（容器/网络/卷）+ prj_* 行删除
+        // 真删级联：工作区销毁（容器/网络/卷）+ prj_* 行删除 + knw_chunks 级联清理（A5 §5）
         verify(workspaceLifecycleAppService).destroy("9200");
+        verify(knowledgePort).purgeByProject(projectId.toString());
         verifyNoRows();
         verify(notificationAppService).publish(eq(ProjectEventTypes.WORKSPACE_DESTROYED),
                 eq(Map.of("projectId", projectId.toString())));

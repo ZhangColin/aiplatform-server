@@ -61,6 +61,27 @@ public final class AgentEventTypes {
      */
     public static final String ROLE_ASSIGNED = "role-assigned";
 
+    /**
+     * 知识检索命中（A5 §4，编排层发射）：run 下发前单点检索注入的命中清单——
+     * payload 带 items（前端呈现「本单命中第一单的 PRD」），常量入册供编排层引用。
+     */
+    public static final String KNOWLEDGE_RETRIEVED = "knowledge-retrieved";
+
+    /** 命中条目清单（knowledge-retrieved；元素 = {kind, projectName, title, snippet?}）。 */
+    public static final String KNOWLEDGE_ITEMS_FIELD = "items";
+
+    /** 命中条目键：素材类别（入库 kind 透出）。 */
+    public static final String KNOWLEDGE_KIND_FIELD = "kind";
+
+    /** 命中条目键：来源项目名（跨项目命中是特性，A5 §3）。 */
+    public static final String KNOWLEDGE_PROJECT_NAME_FIELD = "projectName";
+
+    /** 命中条目键：素材标题。 */
+    public static final String KNOWLEDGE_TITLE_FIELD = "title";
+
+    /** 命中条目键：命中块文本。 */
+    public static final String KNOWLEDGE_SNIPPET_FIELD = "snippet";
+
     /** 角色卡标识（RolePreset 枚举名）。 */
     public static final String ROLE_FIELD = "role";
 

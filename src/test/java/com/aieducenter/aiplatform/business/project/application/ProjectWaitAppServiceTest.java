@@ -75,6 +75,9 @@ class ProjectWaitAppServiceTest {
     @Mock
     private AccountAppService accountAppService;
 
+    @Mock
+    private ProjectKnowledgeAppService knowledgeAppService;
+
     @InjectMocks
     private ProjectWaitAppService appService;
 
@@ -121,6 +124,9 @@ class ProjectWaitAppServiceTest {
                 .containsEntry("runId", "run-1")
                 .containsEntry("waitId", "wait-1")
                 .containsEntry("outcome", "answered");
+        // QA 摄取挂钩（A5 §1：settle(Answer) 编排处即刻）：问题 body + 答复 answers
+        verify(knowledgeAppService).indexQa(eq(PROJECT_ID), eq("wait-1"), any(),
+                eq("用哪个框架?"), eq(List.of(List.of("React"))));
     }
 
     @Test
@@ -138,6 +144,8 @@ class ProjectWaitAppServiceTest {
         ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
         verify(streamAppService).publish(eq(AgentEventTypes.WAIT_SETTLED), payload.capture());
         assertThat(payload.getValue()).containsEntry("outcome", "denied");
+        // 权限答复不摄取（A5 §1：QA 仅问答对）
+        verifyNoInteractions(knowledgeAppService);
     }
 
     @Test

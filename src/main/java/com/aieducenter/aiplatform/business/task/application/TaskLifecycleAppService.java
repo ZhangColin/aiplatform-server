@@ -1,6 +1,7 @@
 package com.aieducenter.aiplatform.business.task.application;
 
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.stereotype.Service;
@@ -15,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.identity.application.AccountAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectAgentTaskAppService;
+import com.aieducenter.aiplatform.business.project.application.ProjectKnowledgeAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.task.application.dto.command.CreateTaskCommand;
 import com.aieducenter.aiplatform.business.task.application.dto.command.SubmitTaskCommand;
@@ -59,6 +61,7 @@ public class TaskLifecycleAppService {
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
     private final FixDispatchAppService fixDispatchAppService;
+    private final ProjectKnowledgeAppService knowledgeAppService;
 
     public TaskLifecycleAppService(TaskRepository taskRepository,
                                    BugRepository bugRepository,
@@ -70,7 +73,8 @@ public class TaskLifecycleAppService {
                                    ApplicationEventPublisher eventPublisher,
                                    TransactionTemplate transactionTemplate,
                                    ObjectMapper objectMapper,
-                                   FixDispatchAppService fixDispatchAppService) {
+                                   FixDispatchAppService fixDispatchAppService,
+                                   ProjectKnowledgeAppService knowledgeAppService) {
         this.taskRepository = taskRepository;
         this.bugRepository = bugRepository;
         this.agentTaskAppService = agentTaskAppService;
@@ -82,6 +86,7 @@ public class TaskLifecycleAppService {
         this.transactionTemplate = transactionTemplate;
         this.objectMapper = objectMapper;
         this.fixDispatchAppService = fixDispatchAppService;
+        this.knowledgeAppService = knowledgeAppService;
     }
 
     /**
@@ -161,8 +166,9 @@ public class TaskLifecycleAppService {
      * dev confirm（A4 §3 确认时点；owner 守卫防自确认）：一事务内——任务终态 +
      * Bug 批量落库（首轮 OPEN）或复测翻态（pass → VERIFIED / fail → 退回 OPEN）
      * + TaskCompleted 应用事件（AFTER_COMMIT）。空 Bug 清单允许：确认后无入库，
-     * G3 直接就绪。事务块之后触发修复派发（A4 §4 触发①②——有 OPEN 可派才起链，
-     * 无则空转；in-flight 幂等门在链内）。
+     * G3 直接就绪。事务块之后：知识摄取（A5 §1——测试报告 + OPEN 时刻的 Bug，
+     * 失败降级不炸）→ 修复派发（A4 §4 触发①②——有 OPEN 可派才起链，无则空转；
+     * in-flight 幂等门在链内）。
      *
      * @throws ApplicationException TASK_007/002/005/006 同上（载荷在事务内复验）；
      *                              TASK_009 非项目归属账号（403）
@@ -170,19 +176,19 @@ public class TaskLifecycleAppService {
     public TaskDetailResponse confirm(Long taskId) {
         Task task = requireTask(taskId);
         requireProjectOwner(task.getProjectId());
-        transactionTemplate.executeWithoutResult(tx -> {
+        ConfirmedOutcome outcome = transactionTemplate.execute(tx -> {
             // 状态守卫先行（重复确认 TASK_002 幂等挡门），载荷复验随后——任一失败
             // 整事务回滚（任务终态与 Bug 入库/翻态要么全落要么全无）
             task.confirm();
             taskRepository.save(task);
             SubmitTaskCommand payload = parseStored(task);
-            if (payload.bugs() != null) {
-                bugRepository.saveAll(payload.bugs().stream()
-                        .map(bug -> Bug.openOf(task.getProjectId(), task.getId(),
-                                bug.title(), bug.description(), bug.reproSteps(),
-                                bug.severity()))
-                        .toList());
-            } else {
+            List<Bug> openedBugs = payload.bugs() == null ? List.of()
+                    : bugRepository.saveAll(payload.bugs().stream()
+                            .map(bug -> Bug.openOf(task.getProjectId(), task.getId(),
+                                    bug.title(), bug.description(), bug.reproSteps(),
+                                    bug.severity()))
+                            .toList());
+            if (payload.bugs() == null) {
                 payload.results().forEach(result -> {
                     Bug bug = requireProjectBug(result.bugId(), task.getProjectId());
                     bug.applyRetestResult(result.pass());
@@ -194,9 +200,18 @@ public class TaskLifecycleAppService {
                     task.getAssigneeAccountId().toString(),
                     task.getConfirmedAt().atZone(ZoneId.systemDefault()).toInstant(),
                     task.getWaitId(), summaryOf(payload)));
+            return new ConfirmedOutcome(payload, openedBugs);
         });
         emitTaskUpdated(task);
-        // AFTER_COMMIT 语义（事务块之后）：修复链起跑（首轮入库/复测退回均有 OPEN 可派）
+        // AFTER_COMMIT 语义（事务块之后）：知识摄取（A5 §1）——测试报告分块 +
+        // Bug 一条一块（仅 OPEN 时刻一次，复测翻态不摄取）；失败降级不炸。
+        // 先于修复派发：修复 run 的检索注入可命中刚入库的素材
+        knowledgeAppService.indexTestReport(task.getProjectId(), task.getId(),
+                task.getTitle(), outcome.payload().report());
+        outcome.openedBugs().forEach(bug -> knowledgeAppService.indexBug(
+                task.getProjectId(), bug.getId(), bug.getTitle(), bug.getDescription(),
+                bug.getReproSteps(), bug.getSeverity().getName()));
+        // 修复链起跑（首轮入库/复测退回均有 OPEN 可派）
         fixDispatchAppService.onConfirmed(task.getProjectId());
         return queryAppService.detailOf(task);
     }
@@ -248,6 +263,10 @@ public class TaskLifecycleAppService {
     }
 
     // ---------- 内部 ----------
+
+    /** confirm 事务产物：载荷（知识摄取复用）+ 本轮新开的 Bug（OPEN 时刻摄取锚）。 */
+    private record ConfirmedOutcome(SubmitTaskCommand payload, List<Bug> openedBugs) {
+    }
 
     /** dev 动作守卫（A4 §6 视角列）：仅项目归属账号（v1 dev 侧 = owner——
      * OPC assignee 不能建任务/确认/驳回/取消，防自确认；角色谓词拆票后升级）。 */

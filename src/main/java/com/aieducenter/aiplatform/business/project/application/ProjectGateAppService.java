@@ -54,6 +54,7 @@ public class ProjectGateAppService {
     private final ProjectAgentTaskAppService agentTaskAppService;
     private final ProjectQueryAppService queryAppService;
     private final PlatformNotificationAppService notificationAppService;
+    private final ProjectKnowledgeAppService knowledgeAppService;
     private final TransactionTemplate transactionTemplate;
 
     public ProjectGateAppService(ProjectRepository projectRepository,
@@ -64,6 +65,7 @@ public class ProjectGateAppService {
                                  ProjectAgentTaskAppService agentTaskAppService,
                                  ProjectQueryAppService queryAppService,
                                  PlatformNotificationAppService notificationAppService,
+                                 ProjectKnowledgeAppService knowledgeAppService,
                                  TransactionTemplate transactionTemplate) {
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
@@ -73,6 +75,7 @@ public class ProjectGateAppService {
         this.agentTaskAppService = agentTaskAppService;
         this.queryAppService = queryAppService;
         this.notificationAppService = notificationAppService;
+        this.knowledgeAppService = knowledgeAppService;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -105,19 +108,26 @@ public class ProjectGateAppService {
         StageEntry next = ((AdvanceResult.Advanced) result).to();
         ConfirmationKind kind = confirmationKindOf(current);
 
-        transactionTemplate.executeWithoutResult(tx -> {
-            confirmationRepository.save(Confirmation.approveOf(iteration.getId(), kind,
-                    RequestContext.getUserId()));
+        Confirmation confirmation = transactionTemplate.execute(tx -> {
+            Confirmation saved = confirmationRepository.save(Confirmation.approveOf(
+                    iteration.getId(), kind, RequestContext.getUserId()));
             if (next.terminal()) {
                 iteration.close(next.name());
             } else {
                 iteration.advanceTo(next.name());
             }
             iterationRepository.save(iteration);
+            return saved;
         });
 
         notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED,
                 StageChangedPayload.approved(projectId, next.name()));
+
+        // A5 §1 摄取（事务提交后，失败降级不炸）：门决策留痕 FEEDBACK + 被通过
+        // 阶段的产物清单 ARTIFACT（v1 仅需求梳理段 PRD.md）。置于自动 Demo 之前——
+        // Demo run 的检索注入可命中刚入库的 PRD。
+        knowledgeAppService.indexFeedback(projectId, confirmation);
+        knowledgeAppService.indexStageArtifacts(projectId, current.name());
 
         // 前缀段自动（A3 §2.3）：G1 需求确认通过 → 自动跑 Demo（完事 preview：
         // GET preview 暴露端口 + preview-ready）。起跑失败不回滚门决策。
@@ -150,12 +160,15 @@ public class ProjectGateAppService {
         ConfirmationKind kind = confirmationKindOf(current);
 
         // reason 必填由留痕不变量兜底（DomainException PRJ_011；REST 面另有 @NotBlank）
-        transactionTemplate.executeWithoutResult(tx ->
+        Confirmation confirmation = transactionTemplate.execute(tx ->
                 confirmationRepository.save(Confirmation.rejectOf(iteration.getId(), kind,
                         RequestContext.getUserId(), reason)));
 
         notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED,
                 StageChangedPayload.rejected(projectId, iteration.getStage(), reason.strip()));
+
+        // A5 §1 摄取（事务提交后，失败降级不炸）：驳回 reason 是验收反馈纪要来源
+        knowledgeAppService.indexFeedback(projectId, confirmation);
         return queryAppService.detail(projectId);
     }
 

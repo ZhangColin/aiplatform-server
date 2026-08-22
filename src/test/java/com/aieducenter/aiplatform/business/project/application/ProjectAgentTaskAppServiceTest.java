@@ -1,5 +1,6 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -20,6 +21,8 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.command.Agent
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
+import com.aieducenter.aiplatform.base.knowledge.domain.model.KnowledgeHit;
+import com.aieducenter.aiplatform.base.knowledge.domain.port.KnowledgePort;
 import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
@@ -71,6 +74,10 @@ class ProjectAgentTaskAppServiceTest {
 
     @MockitoBean
     private PlatformNotificationAppService notificationAppService;
+
+    /** 知识端口 mock（A5 §3 注入单点缝验证；真实检索链路见 KnowledgeAppServiceTest）。 */
+    @MockitoBean
+    private KnowledgePort knowledgePort;
 
     @AfterEach
     void tearDown() {
@@ -332,6 +339,115 @@ class ProjectAgentTaskAppServiceTest {
                 new ProjectAgentTaskCommand("干活", null)))
                 .isInstanceOf(ApplicationException.class)
                 .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
+    // ---------- A5 §3 检索注入单点缝（dispatchTask / dispatchFixRun 共用） ----------
+
+    @Test
+    void given_knowledge_hits_when_dispatch_then_prompt_injected_and_sse_emitted() {
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_BA);
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-k1", "ses-k1", "opencode", true));
+        when(knowledgePort.retrieve(anyString(), eq(5))).thenReturn(List.of(
+                new KnowledgeHit("QA", "第一单", "用哪个框架?", "问：用哪个框架?\n答：React"),
+                new KnowledgeHit("BUG", "第一单", "登录 500", "【标题】登录 500")));
+
+        appService.dispatchTask(project.getId(), new ProjectAgentTaskCommand("梳理电商需求", null));
+
+        // 检索 query = 任务 prompt 全文、topK = 配置默认（5）
+        verify(knowledgePort).retrieve("梳理电商需求", 5);
+
+        // 下发 prompt：命中前置注入（跨项目来源标注），原任务收在【本次任务】节
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        ArgumentCaptor<AgentRunContext> runContext = ArgumentCaptor.forClass(AgentRunContext.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), runContext.capture());
+        assertThat(command.getValue().prompt())
+                .contains("【平台知识库·相似历史沉淀】")
+                .contains("〔QA｜第一单〕用哪个框架?")
+                .contains("【标题】登录 500")
+                .contains("【本次任务】")
+                .endsWith("梳理电商需求");
+
+        // SSE knowledge-retrieved（帧序 role-assigned → knowledge-retrieved → task-start）：
+        // payload = projectId + runId + items[{kind, projectName, title, snippet}]
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(streamAppService).publish(eq(AgentEventTypes.KNOWLEDGE_RETRIEVED),
+                payload.capture());
+        assertThat(payload.getValue())
+                .containsEntry("projectId", project.getId().toString())
+                .containsEntry("runId", runContext.getValue().runId());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items =
+                (List<Map<String, Object>>) payload.getValue().get("items");
+        assertThat(items).hasSize(2);
+        assertThat(items.get(0))
+                .containsEntry("kind", "QA")
+                .containsEntry("projectName", "第一单")
+                .containsEntry("title", "用哪个框架?")
+                .containsEntry("snippet", "问：用哪个框架?\n答：React");
+    }
+
+    @Test
+    void given_no_hits_when_dispatch_then_prompt_untouched_and_no_knowledge_sse() {
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_BA);
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-k2", "ses-k2", "opencode", true));
+        when(knowledgePort.retrieve(anyString(), eq(5))).thenReturn(List.of());
+
+        appService.dispatchTask(project.getId(), new ProjectAgentTaskCommand("梳理需求", null));
+
+        // 空命中：原 prompt 照发、不发 knowledge-retrieved（role-assigned 照发）
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), any());
+        assertThat(command.getValue().prompt()).isEqualTo("梳理需求");
+        verify(streamAppService, never()).publish(eq(AgentEventTypes.KNOWLEDGE_RETRIEVED), any());
+        verify(streamAppService).publish(eq(AgentEventTypes.ROLE_ASSIGNED), any());
+    }
+
+    @Test
+    void given_retrieve_failure_when_dispatch_then_empty_injection_run_still_dispatched() {
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_BA);
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-k3", "ses-k3", "opencode", true));
+        when(knowledgePort.retrieve(anyString(), eq(5)))
+                .thenThrow(new RuntimeException("embedding 服务不可用"));
+
+        ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
+                new ProjectAgentTaskCommand("梳理需求", null));
+
+        // 检索降级为空注入（A5 §3）：run 照常下发，计数照常
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), any());
+        assertThat(command.getValue().prompt()).isEqualTo("梳理需求");
+        assertThat(response.accepted()).isTrue();
+        assertThat(openIteration(project).getStageTaskCount()).isEqualTo(1);
+        verify(streamAppService, never()).publish(eq(AgentEventTypes.KNOWLEDGE_RETRIEVED), any());
+    }
+
+    @Test
+    void given_knowledge_hits_when_dispatch_fix_run_then_prompt_injected() {
+        // 修复 run 经同一注入缝（A5 §3：测试阶段命中历史 Bug 的叙事兑现点）
+        Project project = persistedProject("opencode");
+        when(agentTaskAppService.dispatch(anyString(), any(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-k4", "ses-k4", "opencode", true));
+        when(knowledgePort.retrieve(anyString(), eq(5))).thenReturn(List.of(
+                new KnowledgeHit("BUG", "第一单", "登录 500", "【标题】登录 500")));
+
+        appService.dispatchFixRun(project.getId(), "请修复登录 500", "run-k4", null);
+
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), any(), any());
+        assertThat(command.getValue().prompt())
+                .contains("〔BUG｜第一单〕登录 500")
+                .endsWith("请修复登录 500");
+        verify(streamAppService).publish(eq(AgentEventTypes.KNOWLEDGE_RETRIEVED), any());
     }
 
     // ---------- 测试数据 ----------

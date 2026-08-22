@@ -42,6 +42,9 @@ cartisan:
 app:
   embedding:
     url: http://127.0.0.1:9091
+  # A5 · 知识沉淀：runTask 注入检索的 topK（demo 3，素材增类后上调；A5 §3 可配）
+  knowledge:
+    top-k: 5
   # 片2a · base.agentengine：模型默认值（A1 §2.3 AgentModelConfig，任务入参缺省时兜底）
   # 与任务超时；API Key 不在此（只经环境注入引擎进程，见 AgentApiKeyResolver）。
   agent:

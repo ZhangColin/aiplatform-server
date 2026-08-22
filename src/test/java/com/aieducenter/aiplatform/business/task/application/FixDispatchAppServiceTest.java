@@ -24,6 +24,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.response.Agen
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
+import com.aieducenter.aiplatform.base.knowledge.domain.port.KnowledgePort;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
@@ -84,6 +85,10 @@ class FixDispatchAppServiceTest {
     /** 底座编排入口 mock：链对终态的裁决用捕获的 observer 模拟引擎回调。 */
     @MockitoBean
     private AgentTaskAppService agentTaskAppService;
+
+    /** 知识端口 mock（A5 注入缝在 dispatchFixRun 前；空命中 = 不注入，链行为不涉知识）。 */
+    @MockitoBean
+    private KnowledgePort knowledgePort;
 
     @MockitoBean
     private AgentStreamAppService streamAppService;

@@ -27,9 +27,12 @@ import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppServi
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
+import com.aieducenter.aiplatform.base.knowledge.domain.model.KnowledgeSpec;
+import com.aieducenter.aiplatform.base.knowledge.domain.port.KnowledgePort;
 import com.aieducenter.aiplatform.business.identity.domain.aggregate.Account;
 import com.aieducenter.aiplatform.business.identity.domain.repository.AccountRepository;
 import com.aieducenter.aiplatform.business.project.application.ProjectEventTypes;
+import com.aieducenter.aiplatform.business.project.application.ProjectKnowledgeAppService;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
@@ -54,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.ArgumentMatchers.eq;
@@ -107,6 +111,10 @@ class TaskLifecycleAppServiceTest {
      * FixDispatchAppServiceTest 覆盖，这里只断言触发与幂等）。 */
     @MockitoBean
     private AgentTaskAppService agentTaskAppService;
+
+    /** 知识端口 mock（A5 §1 confirm 摄取挂钩验证；真实入库链路见 KnowledgeAppServiceTest）。 */
+    @MockitoBean
+    private KnowledgePort knowledgePort;
 
     @BeforeEach
     void stubDispatchAccepted() {
@@ -314,6 +322,74 @@ class TaskLifecycleAppServiceTest {
 
         // 一过一退：仍有未关闭 Bug → G3 不就绪
         assertThat(openBugQueryPort.hasOpenBugs(projectId)).isTrue();
+    }
+
+    // ---------- A5 §1 摄取挂钩：TEST_REPORT（报告分块）+ BUG（OPEN 时刻一次） ----------
+
+    @Test
+    void given_first_round_confirm_when_confirm_then_test_report_and_bugs_indexed()
+            throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = submittedFirstRound(projectId, assignee,
+                List.of(new SubmitTaskCommand.BugPayload("登录 500", "提交后 500",
+                        "1. 打开登录页", BugSeverity.CRITICAL)));
+
+        asUser(DEV_OWNER, () -> appService.confirm(taskId));
+
+        // TEST_REPORT：source_ref = taskId，报告文本分块入库（title 带任务标题）
+        // BUG：一条一块（标题/描述/复现步骤/严重级），source_ref = bugId、meta 带 severity
+        ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
+        verify(knowledgePort, times(2)).index(spec.capture());
+        KnowledgeSpec report = spec.getAllValues().stream()
+                .filter(s -> ProjectKnowledgeAppService.KIND_TEST_REPORT.equals(s.kind()))
+                .findFirst().orElseThrow();
+        assertThat(report.sourceRef()).isEqualTo(taskId.toString());
+        assertThat(report.title()).contains("回归测试");
+        assertThat(report.chunks()).singleElement().isEqualTo("首轮报告");
+        assertThat(report.meta()).containsEntry("taskId", taskId.toString());
+        KnowledgeSpec bug = spec.getAllValues().stream()
+                .filter(s -> ProjectKnowledgeAppService.KIND_BUG.equals(s.kind()))
+                .findFirst().orElseThrow();
+        assertThat(bug.sourceRef()).isEqualTo(bugRows(projectId).get(0).get("id").toString());
+        assertThat(bug.title()).isEqualTo("登录 500");
+        assertThat(bug.chunks()).singleElement().asString()
+                .contains("【标题】登录 500").contains("【描述】提交后 500")
+                .contains("【复现步骤】1. 打开登录页").contains("【严重级】严重");
+        assertThat(bug.meta()).containsEntry("severity", "严重");
+    }
+
+    @Test
+    void given_retest_confirm_when_confirm_then_report_only_no_bug_reindex() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = createdTaskOf(projectId, assignee);
+        Bug fixed = bugRepository.save(Bug.fixedOf(projectId, taskId, "登录 500",
+                "run-9", "已修复登录拦截"));
+
+        asUser(assignee, () -> appService.start(taskId));
+        asUser(assignee, () -> appService.submit(taskId, new SubmitTaskCommand(
+                "复测报告", null,
+                List.of(new SubmitTaskCommand.RetestResultPayload(fixed.getId(), true, "已复现修复")))));
+        asUser(DEV_OWNER, () -> appService.confirm(taskId));
+
+        // 复测确认只摄取报告；Bug 状态演化（FIXED/VERIFIED）明确不入（A5 §1）
+        ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
+        verify(knowledgePort, times(1)).index(spec.capture());
+        assertThat(spec.getValue().kind()).isEqualTo(ProjectKnowledgeAppService.KIND_TEST_REPORT);
+    }
+
+    @Test
+    void given_index_failure_when_confirm_then_confirmed_anyway() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = submittedFirstRound(projectId, assignee, List.of());
+        doThrow(new RuntimeException("向量库写失败")).when(knowledgePort).index(any());
+
+        TaskDetailResponse detail = asUser(DEV_OWNER, () -> appService.confirm(taskId));
+
+        // 摄取失败降级不炸（A5 §1）：确认与修复链触发照常
+        assertThat(detail.task().status()).isEqualByComparingTo(TaskStatus.CONFIRMED);
     }
 
     // ---------- 确认触发修复链（A4 §4 触发①②，#27） ----------

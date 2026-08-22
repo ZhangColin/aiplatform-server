@@ -55,6 +55,7 @@ public class ProjectLifecycleAppService {
     private final IterationRepository iterationRepository;
     private final ProjectQueryAppService queryAppService;
     private final PlatformNotificationAppService notificationAppService;
+    private final ProjectKnowledgeAppService knowledgeAppService;
     private final TransactionTemplate transactionTemplate;
 
     public ProjectLifecycleAppService(WorkspaceLifecycleAppService workspaceLifecycleAppService,
@@ -64,6 +65,7 @@ public class ProjectLifecycleAppService {
                                       IterationRepository iterationRepository,
                                       ProjectQueryAppService queryAppService,
                                       PlatformNotificationAppService notificationAppService,
+                                      ProjectKnowledgeAppService knowledgeAppService,
                                       TransactionTemplate transactionTemplate) {
         this.workspaceLifecycleAppService = workspaceLifecycleAppService;
         this.agentTaskAppService = agentTaskAppService;
@@ -72,6 +74,7 @@ public class ProjectLifecycleAppService {
         this.iterationRepository = iterationRepository;
         this.queryAppService = queryAppService;
         this.notificationAppService = notificationAppService;
+        this.knowledgeAppService = knowledgeAppService;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -151,7 +154,8 @@ public class ProjectLifecycleAppService {
 
     /**
      * 删除项目（真删级联）：工作区物理销毁（容器/网络/卷，尽力而为）→ prj_* 行
-     * 级联删除（期随 FK 级联、确认留痕随期级联）→ SSE workspace-destroyed。
+     * 级联删除（期随 FK 级联、确认留痕随期级联）→ knw_chunks 级联清理（A5 §5，
+     * 尽力而为）→ SSE workspace-destroyed。
      */
     public void delete(Long projectId) {
         Project project = requireProject(projectId);
@@ -160,6 +164,7 @@ public class ProjectLifecycleAppService {
             iterationRepository.deleteByProjectId(projectId);
             projectRepository.delete(project);
         });
+        knowledgeAppService.purgeByProject(projectId);
         notificationAppService.publish(ProjectEventTypes.WORKSPACE_DESTROYED, Map.of(
                 ProjectEventTypes.PROJECT_ID_FIELD, projectId.toString()));
     }

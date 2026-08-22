@@ -43,6 +43,11 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>开发→测试推进（A3 §2.3 唯一触发）：首个测试任务（显式 TEST 角色且期在
  * 开发段）被引擎接受即 advance + stage-changed（无门段，非人拍板）。</p>
+ *
+ * <p>知识检索注入单点缝（A5 §3）：dispatchTask / dispatchFixRun 的 run 下发前
+ * 经 {@link ProjectKnowledgeAppService#injectForRun}——全局跨项目纯相似命中前置
+ * 注入 prompt 并发射 knowledge-retrieved（帧序 role-assigned →
+ * knowledge-retrieved → task-start）；空命中/降级原样下发。</p>
  */
 @Service
 @Slf4j
@@ -56,6 +61,7 @@ public class ProjectAgentTaskAppService {
     private final AgentTaskAppService agentTaskAppService;
     private final AgentStreamAppService streamAppService;
     private final PlatformNotificationAppService notificationAppService;
+    private final ProjectKnowledgeAppService knowledgeAppService;
     private final TransactionTemplate transactionTemplate;
 
     public ProjectAgentTaskAppService(ProjectRepository projectRepository,
@@ -63,12 +69,14 @@ public class ProjectAgentTaskAppService {
                                       AgentTaskAppService agentTaskAppService,
                                       AgentStreamAppService streamAppService,
                                       PlatformNotificationAppService notificationAppService,
+                                      ProjectKnowledgeAppService knowledgeAppService,
                                       TransactionTemplate transactionTemplate) {
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
         this.agentTaskAppService = agentTaskAppService;
         this.streamAppService = streamAppService;
         this.notificationAppService = notificationAppService;
+        this.knowledgeAppService = knowledgeAppService;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -87,10 +95,13 @@ public class ProjectAgentTaskAppService {
 
         String runId = AgentRunContext.newRunId();
         emitRoleAssigned(projectId, runId, role, stage, project.getEngine());
+        // 知识检索注入单点缝（A5 §3）：query = 任务 prompt 全文（截断），命中前置
+        // 注入 + knowledge-retrieved 发射；空命中/降级 = 原 prompt 照发
+        String prompt = knowledgeAppService.injectForRun(projectId, runId, command.prompt());
 
         AgentTaskResponse result = agentTaskAppService.dispatch(
                 Long.toString(project.getWorkspaceId()),
-                new AgentTaskDispatchCommand(command.prompt(), role.systemPrompt(),
+                new AgentTaskDispatchCommand(prompt, role.systemPrompt(),
                         role.modelId(), project.getEngine(), null),
                 new AgentRunContext(runId,
                         new UsageContext(Long.toString(projectId),
@@ -141,10 +152,13 @@ public class ProjectAgentTaskAppService {
                 : ProjectMainChain.STAGE_CLOSED;
 
         emitRoleAssigned(projectId, runId, role, stage, project.getEngine());
+        // 检索注入单点同 dispatchTask（A5 §3：修复 run 天然命中历史 Bug——测试阶段
+        // 叙事的兑现点）
+        String effectivePrompt = knowledgeAppService.injectForRun(projectId, runId, prompt);
 
         AgentTaskResponse result = agentTaskAppService.dispatch(
                 Long.toString(project.getWorkspaceId()),
-                new AgentTaskDispatchCommand(prompt, role.systemPrompt(),
+                new AgentTaskDispatchCommand(effectivePrompt, role.systemPrompt(),
                         role.modelId(), project.getEngine(), null),
                 new AgentRunContext(runId,
                         new UsageContext(Long.toString(projectId),
