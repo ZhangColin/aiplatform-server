@@ -18,11 +18,12 @@ import com.aieducenter.aiplatform.base.metering.domain.repository.UsageEventAggr
 import com.aieducenter.aiplatform.base.metering.domain.repository.UsageEventRepository;
 
 /**
- * 计量用例（票 #16）：用量事件幂等采集 + 按 subject 聚合查询。
+ * 计量用例（票 #16 + #29）：用量事件幂等采集 + 按 subject 聚合查询（总量/分模型/
+ * 分维度 + 平台成本换算与未配价标注，A6 §2 查询侧现算）。
  *
  * <p>幂等 = first-write-wins：eventId 为主键，重复上报（含并发撞主键）静默吸收、
  * 不抛错——调用方按「上报可安全重试」语义使用（A1 §2.1）。采集与聚合只记 token
- * 不记钱；金额换算（平台成本）归 A6 查询侧扩展。</p>
+ * 不记钱；金额换算（平台成本）不落库，每次查询按事件时点生效单价现算。</p>
  */
 @Service
 @Slf4j
@@ -63,9 +64,9 @@ public class MeteringAppService {
     }
 
     /**
-     * 按 subject 聚合（总量 + 分模型 + 分维度），时间窗半开区间，null 侧不限。
-     * 只读事务快照：三条聚合 SQL 落在同一一致性视图，并发上报不破坏
-     * 总量 = Σ分模型 = Σ分维度 的自洽。
+     * 按 subject 聚合（总量 + 平台成本 + 未配价 + 分模型 + 分维度），时间窗半开区间，
+     * null 侧不限。只读事务快照：五条聚合 SQL 落在同一一致性视图，并发上报不破坏
+     * 总量 = Σ分模型 = Σ分维度、cost = 窗口内已配价分量和 的自洽。
      */
     @Transactional(readOnly = true)
     public UsageSummary bySubject(String subject, Instant from, Instant to) {

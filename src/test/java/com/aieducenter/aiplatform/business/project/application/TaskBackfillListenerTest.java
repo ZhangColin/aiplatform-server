@@ -49,6 +49,7 @@ class TaskBackfillListenerTest {
 
     private static final long PROJECT_ID = 31L;
     private static final long WORKSPACE_ID = 3100L;
+    private static final long ITERATION_ID = 3101L;
     private static final String WAIT_ID = "wait-31";
     private static final String SESSION_ID = "ses-origin";
 
@@ -76,8 +77,7 @@ class TaskBackfillListenerTest {
         stubSession("opencode", WORKSPACE_ID);
         stubProject();
         when(iterationRepository.findByProjectIdAndStatus(PROJECT_ID, IterationStatus.OPEN))
-                .thenReturn(Optional.of(Iteration.open(PROJECT_ID, Iteration.FIRST_SEQ,
-                        ProjectMainChain.STAGE_BA)));
+                .thenReturn(Optional.of(openIterationFixture()));
 
         listener.on(completed());
 
@@ -94,14 +94,37 @@ class TaskBackfillListenerTest {
                 .contains("处理结果")
                 .contains("首轮回归报告")
                 .contains("登录 500");
-        // 计量归属：subject=projectId + dims role=RESUME + stage；projectId 流关联注入
+        // 计量归属：subject=projectId + dims role=RESUME + stage + iterationId（OPEN 期
+        // 快照，A6 §3）；projectId 流关联注入
         assertThat(context.getValue().usageContext().subject())
                 .isEqualTo(Long.toString(PROJECT_ID));
         assertThat(context.getValue().usageContext().dims())
                 .containsEntry("role", TaskBackfillListener.RESUME_ROLE_DIM)
-                .containsEntry("stage", ProjectMainChain.STAGE_BA);
+                .containsEntry("stage", ProjectMainChain.STAGE_BA)
+                .containsEntry("iterationId", Long.toString(ITERATION_ID));
         assertThat(context.getValue().streamCorrelation())
                 .containsEntry("projectId", Long.toString(PROJECT_ID));
+    }
+
+    @Test
+    void given_no_open_iteration_when_completed_then_resume_dims_without_iteration_id() {
+        // 期后回填续跑（A6 §3）：无 OPEN 期 → dims 不带 iterationId（归项目不归期）
+        stubWait(WaitOutcome.DEFERRED);
+        stubSession("opencode", WORKSPACE_ID);
+        stubProject();
+        when(iterationRepository.findByProjectIdAndStatus(PROJECT_ID, IterationStatus.OPEN))
+                .thenReturn(Optional.empty());
+
+        listener.on(completed());
+
+        ArgumentCaptor<com.aieducenter.aiplatform.base.agentengine.application.AgentRunContext>
+                context = ArgumentCaptor.forClass(
+                        com.aieducenter.aiplatform.base.agentengine.application.AgentRunContext.class);
+        verify(agentTaskAppService).dispatch(anyString(), any(), context.capture());
+        assertThat(context.getValue().usageContext().dims())
+                .containsEntry("role", TaskBackfillListener.RESUME_ROLE_DIM)
+                .containsEntry("stage", ProjectMainChain.STAGE_CLOSED)
+                .doesNotContainKey("iterationId");
     }
 
     @Test
@@ -188,5 +211,13 @@ class TaskBackfillListenerTest {
         ReflectionTestUtils.setField(project, "id", PROJECT_ID);
         when(projectRepository.findByWorkspaceIdIn(List.of(WORKSPACE_ID)))
                 .thenReturn(List.of(project));
+    }
+
+    /** OPEN 期夹具（同 stubProject：id 反射补上，Iteration.open 不落 id）。 */
+    private Iteration openIterationFixture() {
+        Iteration iteration = Iteration.open(PROJECT_ID, Iteration.FIRST_SEQ,
+                ProjectMainChain.STAGE_BA);
+        ReflectionTestUtils.setField(iteration, "id", ITERATION_ID);
+        return iteration;
     }
 }

@@ -10,7 +10,7 @@ import java.util.Map;
  * {@code subject} 不透明归属 id（业务层传 projectId，底座不解释）；{@code runId}/
  * {@code sessionId} 运行与会话寻址（可空——非 run 级来源可不带）；{@code provider}/
  * {@code model}/{@code engine} 模型与引擎标识（A6 单价表匹配键）；{@code dims} 业务
- * 维度透传（role/stage 等，A6 再扩 iterationId，底座不解释，可空）；{@code tokens}
+ * 维度透传（role/stage/iterationId 等，底座不解释，可空）；{@code tokens}
  * 五档互斥分解（见 {@link TokenUsage}）。run 级一条：step-finish 增量求和是 adapter
  * 内部实现，不进协议。</p>
  */

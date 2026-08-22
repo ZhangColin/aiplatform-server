@@ -103,17 +103,22 @@ public class TaskBackfillListener {
             return;
         }
         Project project = projects.get(0);
-        String stage = iterationRepository
+        Iteration openIteration = iterationRepository
                 .findByProjectIdAndStatus(project.getId(), IterationStatus.OPEN)
-                .map(Iteration::getStage).orElse(ProjectMainChain.STAGE_CLOSED);
+                .orElse(null);
+        String stage = openIteration != null
+                ? openIteration.getStage() : ProjectMainChain.STAGE_CLOSED;
 
         agentTaskAppService.dispatch(
                 Long.toString(project.getWorkspaceId()),
                 new AgentTaskDispatchCommand(resumePromptOf(event), RolePreset.DEV.systemPrompt(),
                         RolePreset.DEV.modelId(), session.engine(), session.sessionId()),
                 new AgentRunContext(AgentRunContext.newRunId(),
+                        // 计量 dims 与 dispatchTask 同组装点（A6 §3：iterationId 有 OPEN
+                        // 期才带——续跑归发起时所在期；期后续跑归项目不归期）
                         new UsageContext(Long.toString(project.getId()),
-                                Map.of("role", RESUME_ROLE_DIM, "stage", stage)),
+                                ProjectAgentTaskAppService.usageDims(RESUME_ROLE_DIM, stage,
+                                        openIteration)),
                         Map.of(AgentStreamAppService.PROJECT_FIELD, Long.toString(project.getId()))));
         log.info("[project] 任务 {} 回填续跑：会话 {}（waitId={} summary 已作新消息）",
                 event.taskId(), session.sessionId(), event.waitId());

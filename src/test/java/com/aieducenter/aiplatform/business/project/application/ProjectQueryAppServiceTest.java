@@ -1,6 +1,8 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.math.BigDecimal;
 import java.time.ZoneId;
+import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -16,6 +18,7 @@ import com.cartisan.core.exception.ApplicationException;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppService;
 import com.aieducenter.aiplatform.base.metering.application.MeteringAppService;
+import com.aieducenter.aiplatform.base.metering.domain.enums.TokenKind;
 import com.aieducenter.aiplatform.base.metering.domain.model.TokenUsage;
 import com.aieducenter.aiplatform.base.metering.domain.model.UsageSummary;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
@@ -24,6 +27,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
+import com.aieducenter.aiplatform.business.project.domain.enums.IterationStatus;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatus;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectStatusFilter;
@@ -42,9 +46,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 项目读侧（片5c 验收，A3 §5 / A1 §2.5）：详情 = 期位置 + 主链定义数据（进度条
+ * 项目读侧（片5c 验收 + #29，A3 §5 / A1 §2.5 / A6 §3）：详情 = 期位置 + 主链定义数据（进度条
  * 渲染）+ 门就绪（计数 ∧ 业务谓词，与 approve 门禁同口径）+ 派生状态；列表状态
- * 过滤 active/pending/archived/all；usage = 总量 + 分模型 + 分角色。主链推进
+ * 过滤 active/pending/archived/all；usage = 总量 + 平台成本（币种分桶 + 未配价标注）
+ * + 分模型 + 分角色 + 按期。主链推进
  * 语义归 base.process StageAdvanceServiceTest，聚合口径（门就绪 ∧ 待办派生）在此。
  */
 @SpringBootTest
@@ -263,11 +268,15 @@ class ProjectQueryAppServiceTest {
     // ---------- usage ----------
 
     @Test
-    void given_usage_events_when_usage_then_total_by_model_by_role() {
+    void given_usage_events_when_usage_then_total_cost_unpriced_by_model_by_role() {
         Long projectId = persistedProjectWithoutIteration(8201L).getId();
         TokenUsage tokens = new TokenUsage(100, 200, 30, 0, 0);
         when(meteringAppService.bySubject(eq(projectId.toString()), any(), any()))
                 .thenReturn(new UsageSummary(projectId.toString(), null, null, tokens,
+                        Map.of(Currency.getInstance("USD"), new BigDecimal("0.003"),
+                                Currency.getInstance("CNY"), new BigDecimal("1.5")),
+                        List.of(new UsageSummary.UnpricedUsage("testprov", "m-none",
+                                TokenKind.INPUT)),
                         List.of(new UsageSummary.ModelUsage("deepseek", "deepseek-v4-pro",
                                 tokens)),
                         List.of(new UsageSummary.DimUsage("role", "BA", tokens),
@@ -279,6 +288,14 @@ class ProjectQueryAppServiceTest {
 
         assertThat(response.projectId()).isEqualTo(projectId.toString());
         assertThat(response.total()).isEqualTo(tokens); // 总量
+        // 平台成本：Currency → 币种码字符串键，按键序稳定（CNY < USD）
+        assertThat(response.cost().keySet()).containsExactly("CNY", "USD");
+        assertThat(response.cost().get("USD")).isEqualByComparingTo(new BigDecimal("0.003"));
+        assertThat(response.cost().get("CNY")).isEqualByComparingTo(new BigDecimal("1.5"));
+        // 未配价标注：档位枚举 + 展示名随附（#34 房规）
+        assertThat(response.unpriced()).containsExactly(
+                new ProjectUsageResponse.UnpricedUsage("testprov", "m-none",
+                        TokenKind.INPUT, "输入"));
         assertThat(response.byModel()).hasSize(1); // 分模型
         assertThat(response.byModel().get(0).model()).isEqualTo("deepseek-v4-pro");
         // 分角色 = dims.role 维度（stage 维度不进 byRole）
@@ -286,20 +303,67 @@ class ProjectQueryAppServiceTest {
                 .containsExactly("BA", "DEV");
         assertThat(response.byRole()).extracting(ProjectUsageResponse.RoleUsage::roleLabel)
                 .containsExactly("需求分析师", "开发工程师");
+        // 无 iterationId 维度 → 无按期桶
+        assertThat(response.byIteration()).isEmpty();
+    }
+
+    @Test
+    void given_iteration_dims_when_usage_then_by_iteration_with_seq_sorted() {
+        // 两期（一期收口一期在跑）：seq 从库行补全；到期外的脏 dim 值 seq=null 排末位
+        Project project = persistedProjectWithIteration(ProjectMainChain.STAGE_TEST, 0, 8202L);
+        Iteration closed = iterationRepository
+                .findByProjectIdAndStatus(project.getId(), IterationStatus.OPEN).orElseThrow();
+        closed.close(ProjectMainChain.STAGE_CLOSED);
+        iterationRepository.save(closed);
+        Iteration open = iterationRepository.save(
+                Iteration.open(project.getId(), 2, ProjectMainChain.STAGE_DEV));
+
+        TokenUsage t1 = new TokenUsage(10, 5, 0, 0, 0);
+        TokenUsage t2 = new TokenUsage(20, 6, 0, 0, 0);
+        TokenUsage t3 = new TokenUsage(30, 7, 0, 0, 0);
+        when(meteringAppService.bySubject(eq(project.getId().toString()), any(), any()))
+                .thenReturn(new UsageSummary(project.getId().toString(), null, null,
+                        new TokenUsage(60, 18, 0, 0, 0), Map.of(), List.of(), List.of(),
+                        List.of(new UsageSummary.DimUsage("iterationId",
+                                        open.getId().toString(), t2),
+                                new UsageSummary.DimUsage("iterationId",
+                                        closed.getId().toString(), t1),
+                                new UsageSummary.DimUsage("iterationId", "not-a-number", t3),
+                                new UsageSummary.DimUsage("role", "DEV",
+                                        new TokenUsage(60, 18, 0, 0, 0)))));
+
+        ProjectUsageResponse response = appService.usage(project.getId());
+
+        // 按期聚合：期序号升序（数值序非字符串序），role 维度不进期桶
+        assertThat(response.byIteration()).extracting(
+                        ProjectUsageResponse.IterationUsage::iterationId)
+                .containsExactly(closed.getId().toString(), open.getId().toString(),
+                        "not-a-number");
+        assertThat(response.byIteration()).extracting(
+                        ProjectUsageResponse.IterationUsage::seq)
+                .containsExactly(1, 2, null);
+        assertThat(response.byIteration().get(0).tokens()).isEqualTo(t1);
+        assertThat(response.byIteration().get(1).tokens()).isEqualTo(t2);
+        // 期后修复口径的镜像：total 含全部（60），期桶合计也是全部带维度者的和——
+        // 无 iterationId 的事件只进 total（该语义由编排侧不挂维度保证，此处验证过滤不虚构桶）
+        assertThat(response.total().input()).isEqualTo(60);
     }
 
     @Test
     void given_no_events_when_usage_then_all_zero_not_error() {
-        Long projectId = persistedProjectWithoutIteration(8202L).getId();
+        Long projectId = persistedProjectWithoutIteration(8203L).getId();
         when(meteringAppService.bySubject(eq(projectId.toString()), any(), any())).thenReturn(
                 new UsageSummary(projectId.toString(), null, null,
-                        new TokenUsage(0, 0, 0, 0, 0), List.of(), List.of()));
+                        new TokenUsage(0, 0, 0, 0, 0), Map.of(), List.of(), List.of(), List.of()));
 
         ProjectUsageResponse response = appService.usage(projectId);
 
         assertThat(response.total().input()).isZero(); // 无事件全零而非错误（端口契约）
+        assertThat(response.cost()).isEmpty();
+        assertThat(response.unpriced()).isEmpty();
         assertThat(response.byModel()).isEmpty();
         assertThat(response.byRole()).isEmpty();
+        assertThat(response.byIteration()).isEmpty();
     }
 
     @Test

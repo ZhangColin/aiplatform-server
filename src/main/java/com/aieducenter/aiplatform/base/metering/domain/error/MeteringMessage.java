@@ -11,7 +11,11 @@ public enum MeteringMessage implements CodeMessage {
 
     USAGE_EVENT_FIELDS_INCOMPLETE(400, "METER_002", "用量事件字段不完整"),
 
-    USAGE_SUBJECT_REQUIRED(400, "METER_003", "用量查询必须指定 subject");
+    USAGE_SUBJECT_REQUIRED(400, "METER_003", "用量查询必须指定 subject"),
+
+    PRICE_ENTRY_FIELDS_INCOMPLETE(400, "METER_004", "单价行字段不完整"),
+
+    PRICE_ENTRY_CLOSE_INVALID(400, "METER_005", "关行时点非法（空或早于生效起点）");
 
     private final int httpStatus;
     private final String code;

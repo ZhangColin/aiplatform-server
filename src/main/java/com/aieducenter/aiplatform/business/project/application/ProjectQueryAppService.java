@@ -1,8 +1,12 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.Currency;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -40,10 +44,10 @@ import com.aieducenter.aiplatform.business.project.domain.repository.IterationRe
 import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepository;
 
 /**
- * 项目读侧用例（片5c，A3 §5 / A1 §2.5）：详情（期位置 + 主链定义数据 + 门就绪 +
- * 派生状态）、列表（状态过滤 ACTIVE/PENDING/ARCHIVED/缺省 all，#34 收敛为
- * Integer code）、用量（总量 +
- * 分模型 + 分角色）+ workbench 查询端口（门就绪清单 / workspaceId 寻址，A2 §5）。
+ * 项目读侧用例（片5c，A3 §5 / A1 §2.5 / A6 §3）：详情（期位置 + 主链定义数据 +
+ * 门就绪 + 派生状态）、列表（状态过滤 ACTIVE/PENDING/ARCHIVED/缺省 all，#34 收敛为
+ * Integer code）、用量（总量 + 平台成本 + 分模型 + 分角色 + 按期）+ workbench
+ * 查询端口（门就绪清单 / workspaceId 寻址，A2 §5）。
  * 写侧（生命周期/门操作/需求池）各自成服务，读拼装集中一处——门就绪的裁决
  * （计数 ∧ 业务谓词）与列表 pending 派生（期门就绪 ∨ 工作区待处理等待点，A2 §63）
  * 同源，避免两处口径漂移。
@@ -51,8 +55,11 @@ import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepo
 @Service
 public class ProjectQueryAppService {
 
-    /** 任务下发时记入 dims 的角色维度键（与 ProjectAgentTaskAppService 对齐）。 */
-    private static final String DIM_ROLE = "role";
+    /** 计量维度键（写侧单点定义在 {@link ProjectAgentTaskAppService}，读侧对齐引用）。 */
+    private static final String DIM_ROLE = ProjectAgentTaskAppService.DIM_ROLE;
+
+    /** 见上（期维度：A6 §3 run 发起时快照；期后修复 run 不带）。 */
+    private static final String DIM_ITERATION = ProjectAgentTaskAppService.DIM_ITERATION;
 
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
@@ -112,14 +119,23 @@ public class ProjectQueryAppService {
     }
 
     /**
-     * 项目用量（A1 §2.5 基础版）：经计量查询端口按 subject=projectId 聚合——
-     * 总量 + 分模型 + 分角色（dims.role 维度过滤）；cost 与按期聚合随 A6 扩展。
+     * 项目用量（A1 §2.5 + A6 §3）：经计量查询端口按 subject=projectId 聚合——
+     * 总量 + 平台成本（币种分桶 + 未配价标注）+ 分模型 + 分角色（dims.role 过滤）
+     * + 按期（dims.iterationId 过滤；期后修复 run 无该维度，入总量不入期桶）。
      *
      * @throws ApplicationException PRJ_001 项目不存在
      */
     public ProjectUsageResponse usage(Long projectId) {
         loadProject(projectId);
         UsageSummary summary = usageQueryPort.bySubject(Long.toString(projectId), null, null);
+        Map<String, BigDecimal> cost = summary.cost().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey(Comparator.comparing(Currency::getCurrencyCode)))
+                .collect(Collectors.toMap(entry -> entry.getKey().getCurrencyCode(),
+                        Map.Entry::getValue, (left, right) -> left, LinkedHashMap::new));
+        List<ProjectUsageResponse.UnpricedUsage> unpriced = summary.unpriced().stream()
+                .map(usage -> new ProjectUsageResponse.UnpricedUsage(usage.provider(),
+                        usage.model(), usage.tokenKind(), usage.tokenKind().getName()))
+                .toList();
         List<ProjectUsageResponse.ModelUsage> byModel = summary.byModel().stream()
                 .map(model -> new ProjectUsageResponse.ModelUsage(
                         model.provider(), model.model(), model.tokens()))
@@ -130,8 +146,41 @@ public class ProjectQueryAppService {
                         RolePreset.byName(dim.dimValue()).map(RolePreset::getName).orElse(null),
                         dim.tokens()))
                 .toList();
-        return new ProjectUsageResponse(Long.toString(projectId), summary.total(),
-                byModel, byRole);
+        List<ProjectUsageResponse.IterationUsage> byIteration = byIteration(summary);
+        return new ProjectUsageResponse(Long.toString(projectId), summary.total(), cost,
+                unpriced, byModel, byRole, byIteration);
+    }
+
+    /** 按期聚合映射：dims.iterationId 桶 + 期序号补全（「第 N 期」展示素材）+
+     *  iterationId 数值升序（TSID 时序 ≈ 开期顺序；非数值异常值排末位）。 */
+    private List<ProjectUsageResponse.IterationUsage> byIteration(UsageSummary summary) {
+        List<UsageSummary.DimUsage> iterationDims = summary.byDims().stream()
+                .filter(dim -> DIM_ITERATION.equals(dim.dimKey()))
+                .toList();
+        if (iterationDims.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Integer> seqByIterationId = iterationRepository
+                .findByProjectId(Long.valueOf(summary.subject())).stream()
+                .collect(Collectors.toMap(iteration -> iteration.getId().toString(),
+                        Iteration::getSeq));
+        return iterationDims.stream()
+                .map(dim -> new ProjectUsageResponse.IterationUsage(dim.dimValue(),
+                        seqByIterationId.get(dim.dimValue()), dim.tokens()))
+                .sorted(Comparator.comparingLong(
+                        (ProjectUsageResponse.IterationUsage usage) -> iterationSortKey(
+                                usage.iterationId()))
+                        .thenComparing(ProjectUsageResponse.IterationUsage::iterationId))
+                .toList();
+    }
+
+    /** 期序号排序键：dim 值来自透传，非数值（异常维度值）排末位不炸端点。 */
+    private static long iterationSortKey(String iterationId) {
+        try {
+            return Long.parseLong(iterationId);
+        } catch (NumberFormatException e) {
+            return Long.MAX_VALUE;
+        }
     }
 
     // ---------- workbench 查询端口（A2 §5） ----------

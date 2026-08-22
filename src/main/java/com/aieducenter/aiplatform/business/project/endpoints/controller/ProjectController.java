@@ -153,9 +153,12 @@ public class ProjectController {
     }
 
     @GetMapping("/{id}/usage")
-    @Operation(summary = "项目用量（基础版：总量 + 分模型 + 分角色）",
-            description = "经计量查询端口按 subject=projectId 聚合（A1 §2.5），度量单位 token；"
-                    + "金额（平台成本）与按期聚合随 A6 扩展（票 #29）")
+    @Operation(summary = "项目用量（总量 + 平台成本 + 分模型 + 分角色 + 按期）",
+            description = "经计量查询端口按 subject=projectId 聚合（A1 §2.5 + A6 §3）。"
+                    + "cost 为平台成本口径（token × 事件时点生效单价的机械乘法，币种分桶不折算，"
+                    + "无加价/售价）；unpriced 标注有用量但未配单价的档位（其分量不含于 cost，不伪装 0）；"
+                    + "byIteration 按 dims.iterationId 聚合（run 发起时快照）——期后修复 run 不带该维度，"
+                    + "入项目总量不入任何期桶（收口期成本定格）")
     public ApiResponse<ProjectUsageResponse> usage(@PathVariable String id) {
         return ApiResponse.ok(queryAppService.usage(parseId(id)));
     }

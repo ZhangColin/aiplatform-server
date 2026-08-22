@@ -122,8 +122,10 @@ class ProjectAgentTaskAppServiceTest {
                 .containsEntry("engine", "opencode");
         assertThat(runContext.getValue().usageContext().subject())
                 .isEqualTo(project.getId().toString());
+        // 计量维度（A6 §3）：role + stage + iterationId（OPEN 期 run 发起时快照）
         assertThat(runContext.getValue().usageContext().dims())
-                .containsEntry("role", "BA").containsEntry("stage", ProjectMainChain.STAGE_BA);
+                .containsEntry("role", "BA").containsEntry("stage", ProjectMainChain.STAGE_BA)
+                .containsEntry("iterationId", openIteration(project).getId().toString());
         assertThat(runContext.getValue().streamCorrelation())
                 .containsEntry("projectId", project.getId().toString());
 
@@ -448,6 +450,46 @@ class ProjectAgentTaskAppServiceTest {
                 .contains("〔BUG｜第一单〕登录 500")
                 .endsWith("请修复登录 500");
         verify(streamAppService).publish(eq(AgentEventTypes.KNOWLEDGE_RETRIEVED), any());
+    }
+
+    // ---------- A6 §3 计量维度：iterationId 快照语义 ----------
+
+    @Test
+    void given_open_iteration_when_dispatch_fix_run_then_dims_carry_iteration_id() {
+        // 期内修复 run：归期——dims 带 iterationId（run 发起时快照）+ role=FIX
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_TEST);
+        when(agentTaskAppService.dispatch(anyString(), any(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-i1", "ses-i1", "opencode", true));
+        when(knowledgePort.retrieve(anyString(), eq(5))).thenReturn(List.of());
+
+        appService.dispatchFixRun(project.getId(), "修复回归失败", "run-i1", null);
+
+        ArgumentCaptor<AgentRunContext> runContext = ArgumentCaptor.forClass(AgentRunContext.class);
+        verify(agentTaskAppService).dispatch(anyString(), any(), runContext.capture(), any());
+        assertThat(runContext.getValue().usageContext().dims())
+                .containsEntry("role", ProjectAgentTaskAppService.FIX_ROLE_DIM)
+                .containsEntry("stage", ProjectMainChain.STAGE_TEST)
+                .containsEntry("iterationId", openIteration(project).getId().toString());
+    }
+
+    @Test
+    void given_no_open_iteration_when_dispatch_fix_run_then_dims_without_iteration_id() {
+        // 期后修复 run（A6 §3 / A3 §7）：无 OPEN 期 → dims 不带 iterationId——
+        // 归项目不归期（按期聚合不含它、项目总量含它，收口期成本定格）
+        Project project = persistedProject("opencode");
+        when(agentTaskAppService.dispatch(anyString(), any(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-i2", "ses-i2", "opencode", true));
+        when(knowledgePort.retrieve(anyString(), eq(5))).thenReturn(List.of());
+
+        appService.dispatchFixRun(project.getId(), "期后修个遗留问题", "run-i2", null);
+
+        ArgumentCaptor<AgentRunContext> runContext = ArgumentCaptor.forClass(AgentRunContext.class);
+        verify(agentTaskAppService).dispatch(anyString(), any(), runContext.capture(), any());
+        assertThat(runContext.getValue().usageContext().dims())
+                .containsEntry("role", ProjectAgentTaskAppService.FIX_ROLE_DIM)
+                .containsEntry("stage", ProjectMainChain.STAGE_CLOSED)
+                .doesNotContainKey("iterationId");
     }
 
     // ---------- 测试数据 ----------

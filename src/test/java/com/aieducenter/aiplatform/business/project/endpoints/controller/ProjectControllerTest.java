@@ -1,7 +1,9 @@
 package com.aieducenter.aiplatform.business.project.endpoints.controller;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +24,7 @@ import com.cartisan.core.exception.DomainException;
 import com.cartisan.web.config.BaseEnumConverter;
 import com.cartisan.web.exception.GlobalExceptionHandler;
 
+import com.aieducenter.aiplatform.base.metering.domain.enums.TokenKind;
 import com.aieducenter.aiplatform.base.metering.domain.model.TokenUsage;
 import com.aieducenter.aiplatform.business.project.application.ProjectDemandPoolAppService;
 import com.aieducenter.aiplatform.business.project.application.ProjectGateAppService;
@@ -322,17 +325,29 @@ class ProjectControllerTest {
     void given_usage_when_get_then_aggregations_returned() throws Exception {
         TokenUsage tokens = new TokenUsage(100, 200, 30, 0, 0);
         when(queryAppService.usage(100L)).thenReturn(new ProjectUsageResponse("100", tokens,
+                Map.of("USD", new BigDecimal("0.003")),
+                List.of(new ProjectUsageResponse.UnpricedUsage("testprov", "m-none",
+                        TokenKind.INPUT, TokenKind.INPUT.getName())),
                 List.of(new ProjectUsageResponse.ModelUsage("deepseek", "deepseek-v4-pro",
                         tokens)),
-                List.of(new ProjectUsageResponse.RoleUsage("BA", "需求分析师", tokens))));
+                List.of(new ProjectUsageResponse.RoleUsage("BA", "需求分析师", tokens)),
+                List.of(new ProjectUsageResponse.IterationUsage("42", 1, tokens))));
 
         performAsUser(get("/api/projects/100/usage"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.projectId").value("100"))
                 .andExpect(jsonPath("$.data.total.input").value(100))
+                // 平台成本：币种分桶（键 = 币种码）
+                .andExpect(jsonPath("$.data.cost.USD").value(0.003))
+                // 未配价标注：档位 Integer code + 名称随附（#34 房规）
+                .andExpect(jsonPath("$.data.unpriced[0].tokenKind").value(1))
+                .andExpect(jsonPath("$.data.unpriced[0].tokenKindName").value("输入"))
                 .andExpect(jsonPath("$.data.byModel[0].model").value("deepseek-v4-pro"))
                 .andExpect(jsonPath("$.data.byRole[0].role").value("BA"))
-                .andExpect(jsonPath("$.data.byRole[0].roleLabel").value("需求分析师"));
+                .andExpect(jsonPath("$.data.byRole[0].roleLabel").value("需求分析师"))
+                // 按期聚合：期 id + 期序号
+                .andExpect(jsonPath("$.data.byIteration[0].iterationId").value("42"))
+                .andExpect(jsonPath("$.data.byIteration[0].seq").value(1));
     }
 
     @Test

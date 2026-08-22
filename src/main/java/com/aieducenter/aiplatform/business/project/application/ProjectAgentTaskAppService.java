@@ -34,8 +34,9 @@ import lombok.extern.slf4j.Slf4j;
  * 解析（显式入参或阶段默认）→ role-assigned 发射 → 引擎下发（底座编排入口带上
  * runId/计量归属/流关联）→ 阶段计数。
  *
- * <p>计量归属（A1 §2.4）：subject=projectId、dims={role, stage}——业务维度随
- * UsageEvent 落 met_usage_events；SSE 桥接（ADR-0001 编排层发射制）：projectId
+ * <p>计量归属（A1 §2.4 + A6 §3）：subject=projectId、dims={role, stage, iterationId?}——
+ * iterationId 有 OPEN 期才带（run 发起时快照；期后修复 run 不带，归项目不归期），
+ * 业务维度随 UsageEvent 落 met_usage_events；SSE 桥接（ADR-0001 编排层发射制）：projectId
  * 经 {@link AgentRunContext} 注入 agent 流每帧（含底座补发的 wait-raised），
  * {@code role-assigned} 由本层在 run 下发前发射（帧序 role-assigned →
  * task-start → session-created → …）。引擎交互不进业务事务（秒到分钟级），
@@ -55,6 +56,15 @@ public class ProjectAgentTaskAppService {
 
     /** 修复 run 的计量角色维度值（A4 §4：与 DEV 开发用量区分的用途标记）。 */
     public static final String FIX_ROLE_DIM = "FIX";
+
+    /** 计量维度键（写侧三处组装共用；读侧 ProjectQueryAppService 对齐——单点定义防漂移）。 */
+    public static final String DIM_ROLE = "role";
+
+    /** 见 {@link #DIM_ROLE}。 */
+    public static final String DIM_STAGE = "stage";
+
+    /** 见 {@link #DIM_ROLE}（A6 §3：run 发起时快照；期后修复 run 不带）。 */
+    public static final String DIM_ITERATION = "iterationId";
 
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
@@ -105,7 +115,7 @@ public class ProjectAgentTaskAppService {
                         role.modelId(), project.getEngine(), null),
                 new AgentRunContext(runId,
                         new UsageContext(Long.toString(projectId),
-                                Map.of("role", role.name(), "stage", stage)),
+                                usageDims(role.name(), stage, openIteration)),
                         Map.of(AgentStreamAppService.PROJECT_FIELD, Long.toString(projectId))));
 
         if (result.accepted() && openIteration != null) {
@@ -162,7 +172,7 @@ public class ProjectAgentTaskAppService {
                         role.modelId(), project.getEngine(), null),
                 new AgentRunContext(runId,
                         new UsageContext(Long.toString(projectId),
-                                Map.of("role", FIX_ROLE_DIM, "stage", stage)),
+                                usageDims(FIX_ROLE_DIM, stage, openIteration)),
                         Map.of(AgentStreamAppService.PROJECT_FIELD, Long.toString(projectId))),
                 eventObserver);
 
@@ -223,6 +233,20 @@ public class ProjectAgentTaskAppService {
         }
         return RolePreset.byName(defaultRole)
                 .orElseThrow(() -> new ApplicationException(ProjectMessage.ROLE_UNKNOWN));
+    }
+
+    /**
+     * 计量维度组装（A6 §3）：role + stage + <b>iterationId</b>（有 OPEN 期才带）——
+     * iterationId 取 run 发起时快照（dims 随事件落库，run 中途过门不追改）；期后修复
+     * run 无 OPEN 期不带 iterationId——归项目不归期，收口期成本定格。写侧三处组装点
+     * （dispatchTask / dispatchFixRun / TaskBackfillListener 回填续跑）共用本方法。
+     */
+    static Map<String, String> usageDims(String role, String stage, Iteration openIteration) {
+        if (openIteration == null) {
+            return Map.of(DIM_ROLE, role, DIM_STAGE, stage);
+        }
+        return Map.of(DIM_ROLE, role, DIM_STAGE, stage,
+                DIM_ITERATION, openIteration.getId().toString());
     }
 
     /** role-assigned 发射（run 下发前——帧序 role-assigned → task-start → …）。 */
