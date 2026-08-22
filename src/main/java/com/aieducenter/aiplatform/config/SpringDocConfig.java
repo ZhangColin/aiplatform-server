@@ -1,21 +1,10 @@
 package com.aieducenter.aiplatform.config;
 
-import java.lang.reflect.Type;
-import java.util.Arrays;
-import java.util.stream.Collectors;
-
-import com.fasterxml.jackson.databind.type.TypeFactory;
-
-import io.swagger.v3.core.converter.AnnotatedType;
-import io.swagger.v3.core.converter.ModelConverter;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
-import io.swagger.v3.oas.models.media.Schema;
 import org.springdoc.core.models.GroupedOpenApi;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-
-import com.cartisan.core.domain.BaseEnum;
 
 /**
  * SpringDoc 全局配置（片0，ADR-0001）。
@@ -101,53 +90,7 @@ public class SpringDocConfig {
                 .build();
     }
 
-    // -------- BaseEnum schema 渲染（#34） --------
-
-    /**
-     * BaseEnum 全局 schema 定制（#34）：springdoc 不感知 cartisan-web 的
-     * Jackson {@code serializerByType} 注册，会把 BaseEnum 渲染成 string+name
-     * 枚举，与运行时「JSON 双向 Integer code」冲突。此处一处注册全局生效
-     * （springdoc 的 ModelConverterRegistrar 收集容器里全部 {@link ModelConverter}
-     * bean，各 BC 分组自动带上）：BaseEnum → {@code type=integer} + code→名称
-     * 对照描述；其余类型原样交给链条后续 converter。禁止逐字段 {@code @Schema}
-     * 硬编码——会随新 BC 漂移。
-     */
-    @Bean
-    public ModelConverter baseEnumModelConverter() {
-        return (type, context, chain) -> {
-            Schema<?> integerSchema = baseEnumSchemaOf(type);
-            if (integerSchema != null) {
-                return integerSchema;
-            }
-            return chain.hasNext() ? chain.next().resolve(type, context, chain) : null;
-        };
-    }
-
-    /** BaseEnum 类型 → integer schema（含 code→名称对照）；非 BaseEnum 返回 null。 */
-    private static Schema<?> baseEnumSchemaOf(AnnotatedType type) {
-        if (type == null || type.getType() == null) {
-            return null;
-        }
-        Class<?> rawClass = rawClassOf(type.getType());
-        if (rawClass == null || !BaseEnum.class.isAssignableFrom(rawClass)) {
-            return null;
-        }
-        String codeTable = Arrays.stream(rawClass.getEnumConstants())
-                .map(BaseEnum.class::cast)
-                .map(value -> value.getCode() + "=" + value.getName())
-                .collect(Collectors.joining(", "));
-        return new Schema<>().type("integer").description(codeTable);
-    }
-
-    /** 提取裸类：属性解析路径上 Type 可能是 Class，也可能是 Jackson 解析形。 */
-    private static Class<?> rawClassOf(Type type) {
-        if (type instanceof Class<?> clazz) {
-            return clazz;
-        }
-        try {
-            return TypeFactory.defaultInstance().constructType(type).getRawClass();
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
-    }
+    // BaseEnum schema 全局渲染（BaseEnum → integer + code→名称对照，#34）已上提
+    // cartisan-web（SpringDocIntegrationConfiguration，cartisan-boot#20）——本地
+    // 同名 bean 删除避免 BeanDefinitionOverride（新 SNAPSHOT 起由框架独占提供）。
 }
