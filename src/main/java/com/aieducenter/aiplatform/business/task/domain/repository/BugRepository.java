@@ -25,9 +25,11 @@ public interface BugRepository extends BaseRepository<Bug, Long> {
     List<Bug> findByProjectIdAndStatusAndFixRunIdIsNullOrderByCreatedAtAsc(
             Long projectId, BugStatus status);
 
-    /** in-flight 判定（A4 §4 派发幂等门）：存在 OPEN ∧ fix_run_id 非空的 Bug。 */
-    boolean existsByProjectIdAndStatusAndFixRunIdIsNotNull(Long projectId, BugStatus status);
+    /** in-flight 面（A4 §4 派发幂等门）：OPEN ∧ fix_run_id 非空——新鲜在飞空转、
+     * 陈旧回收续链（年龄判定在应用层，#36）。 */
+    List<Bug> findByProjectIdAndStatusAndFixRunIdIsNotNull(Long projectId, BugStatus status);
 
-    /** 孤儿修复 run 扫描（#27 重启恢复）：OPEN ∧ fix_run_id 非空即链必已死。 */
+    /** 孤儿修复 run 扫描（#27 重启恢复）：OPEN ∧ fix_run_id 非空，陈旧与否由
+     * 调用方按宽限裁决（清走在飞标记即守卫被拒→重复修复，#36）。 */
     List<Bug> findByStatusAndFixRunIdIsNotNull(BugStatus status);
 }

@@ -57,7 +57,8 @@ import static org.mockito.Mockito.when;
  * → FIXED 乐观翻转 + fix_run_id/fix_note → 下一条；error/timeout → 留 OPEN
  * 清引用回池（失败不阻塞链，链内不重试失败 Bug）；同步拒绝/异常同失败收口；
  * 经 project 端口全继承片5 编排（DEV preset、dims role=FIX、阶段计数、期 CLOSED
- * 跳过）；重启恢复置 NULL 回池。
+ * 跳过）；重启恢复置 NULL 回池——#36 后只回收宽限外的陈旧标记（跨实例在飞标记
+ * 存活、陈旧死链由链前进步回收、迟到终态守卫拒+无害冗余重派不回退）。
  */
 @SpringBootTest
 class FixDispatchAppServiceTest {
@@ -298,17 +299,100 @@ class FixDispatchAppServiceTest {
     void given_orphan_run_when_recover_then_null_and_redispatchable() throws Exception {
         Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST);
         Long bugId = persistedBug(projectId, "登录 500");
-        jdbcTemplate.update("UPDATE tsk_bugs SET fix_run_id = 'orphan-run' WHERE id = ?",
-                bugId);
+        // 陈旧孤儿：标记落库时间超出宽限（引擎超时 30 分 + 松弛 5 分，#36）
+        jdbcTemplate.update("UPDATE tsk_bugs SET fix_run_id = 'orphan-run', "
+                + "updated_at = now() - interval '40 minutes' WHERE id = ?", bugId);
         stubAccepted();
 
-        // 启动扫描：OPEN ∧ fix_run_id 非空 = 孤儿（链必已死），置 NULL 回池
+        // 启动扫描：OPEN ∧ fix_run_id 非空 ∧ 宽限外 = 孤儿（链必已死），置 NULL 回池
         appService.recoverOrphanedRuns();
         assertThat(bugRow(bugId).get("fix_run_id")).isNull();
 
         // 回池后可再派发（重跑一次修复 = 无害冗余）
         asUser(DEV_OWNER, () -> appService.dispatchFixes(projectId.toString()));
         assertThat(dispatchCount()).isEqualTo(1);
+    }
+
+    // ---------- 孤儿宽限与防御路径（#36：跨实例标记误清） ----------
+
+    /**
+     * #36 实录复现（冒烟 §7-②）：他实例共享库启动恢复不得清走在飞标记——链中
+     * bugB 修复 run 在飞时兄弟实例启动（{@link #recoverOrphanedRuns()} 全库扫描），
+     * 宽限内的新鲜标记必须存活：首次终态即翻 FIXED，每 Bug 只派发一次 fix run。
+     */
+    @Test
+    void given_fresh_marker_when_sibling_boot_recovers_then_survives_and_single_dispatch()
+            throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST);
+        Long bugA = persistedBug(projectId, "登录 500");
+        Long bugB = persistedBug(projectId, "样式错位");
+        stubAccepted();
+
+        asUser(DEV_OWNER, () -> appService.dispatchFixes(projectId.toString()));
+        observerOf(0).accept(finishEvent()); // bugA FIXED → bugB 派发（标记新鲜在飞）
+        assertThat(dispatchCount()).isEqualTo(2);
+        String runB = contextOf(1).runId();
+
+        // 兄弟实例启动恢复（#36 根因：旧实现无差别清标记 → 守卫被拒 → 同一 Bug 修两次）
+        appService.recoverOrphanedRuns();
+        assertThat(bugRow(bugB).get("fix_run_id")).isEqualTo(runB); // 标记存活
+
+        // 首次终态即翻 FIXED：无 WARN 拒、无重派（同链路每 Bug 只派一次）
+        observerOf(1).accept(finishEvent());
+        assertThat(dispatchCount()).isEqualTo(2);
+        Map<String, Object> rowB = bugRow(bugB);
+        assertThat(rowB.get("status")).isEqualTo(2);
+        assertThat(rowB.get("fix_run_id")).isEqualTo(runB);
+        assertThat(bugRow(bugA).get("status")).isEqualTo(2);
+    }
+
+    /**
+     * #36 防御路径（冒烟实录的净效果形态，重跑=无害冗余不回退）：标记确已丢失
+     * （外部清掉）时，迟到终态 markFixed 守卫拒——不误翻 FIXED，链重派一次收口。
+     */
+    @Test
+    void given_marker_lost_externally_when_terminal_arrives_then_guard_rejects_and_redispatch()
+            throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST);
+        Long bugId = persistedBug(projectId, "登录 500");
+        stubAccepted();
+
+        asUser(DEV_OWNER, () -> appService.dispatchFixes(projectId.toString()));
+        assertThat(dispatchCount()).isEqualTo(1);
+
+        // 模拟标记被外部清掉（#36 冒烟中为兄弟实例启动恢复所为）
+        jdbcTemplate.update("UPDATE tsk_bugs SET fix_run_id = NULL WHERE id = ?", bugId);
+
+        // 迟到终态：守卫拒（fixRunId 不匹配）→ 不误翻，链重派（无害冗余）
+        observerOf(0).accept(finishEvent());
+        assertThat(bugRow(bugId).get("status")).isEqualTo(1); // 未误翻 FIXED
+        assertThat(dispatchCount()).isEqualTo(2);
+
+        observerOf(1).accept(finishEvent());
+        Map<String, Object> row = bugRow(bugId);
+        assertThat(row.get("status")).isEqualTo(2);
+        assertThat(row.get("fix_run_id")).isEqualTo(contextOf(1).runId());
+    }
+
+    /**
+     * 真孤儿（陈旧标记）在触发点回收：宽限只护新鲜标记，重启后无人收终态的死链
+     * 标记由链前进步回收续链——不留「卡 OPEN∧标记非空空转」的缝。
+     */
+    @Test
+    void given_stale_marker_when_trigger_then_recycled_and_dispatched() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST);
+        Long bugId = persistedBug(projectId, "登录 500");
+        // 死链残留标记：落库时间超出宽限（引擎超时 30 分 + 松弛 5 分）
+        jdbcTemplate.update("UPDATE tsk_bugs SET fix_run_id = 'dead-chain-run', "
+                + "updated_at = now() - interval '40 minutes' WHERE id = ?", bugId);
+        stubAccepted();
+
+        asUser(DEV_OWNER, () -> appService.dispatchFixes(projectId.toString()));
+
+        assertThat(dispatchCount()).isEqualTo(1); // 陈旧标记回收后照常派发
+        assertThat(promptOf(0)).contains("登录 500");
+        observerOf(0).accept(finishEvent());
+        assertThat(bugRow(bugId).get("status")).isEqualTo(2);
     }
 
     // ---------- 期 CLOSED 后修复照常、不入期（验收⑦） ----------
