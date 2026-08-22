@@ -78,7 +78,7 @@ public class ProjectController {
 
     @GetMapping
     @Operation(summary = "项目列表（状态过滤）",
-            description = "创建时间倒序。status 过滤（Integer code）：1=ACTIVE（进行中）/ 2=PENDING"
+            description = "创建时间倒序。status 过滤（Integer code）：1=ACTIVE（开发中）/ 2=PENDING"
                     + "（存在 dev 待办：门就绪或等待点待处理）/ 3=ARCHIVED（已归档）；缺省 all。"
                     + "不合法取值 400 PRJ_014")
     public ApiResponse<List<ProjectResponse>> list(
