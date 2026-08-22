@@ -2,6 +2,8 @@ package com.aieducenter.aiplatform.base.agentengine.application;
 
 import java.util.Map;
 
+import com.cartisan.data.jpa.id.TsidGenerator;
+
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
 import com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope;
 
@@ -29,5 +31,13 @@ public record AgentRunContext(String runId, UsageContext usageContext,
             throw new IllegalArgumentException(
                     "streamCorrelation 禁含 " + EventEnvelope.TYPE_KEY + " 键（信封契约）");
         }
+    }
+
+    /**
+     * runId 生成（任务端点生成，ADR-0001）：TSID 十进制字符串——编排层（片5 /
+     * 修复链 / 回填续跑）与底座同构的唯一生成口（SSE id / 库列 / 日志共用形）。
+     */
+    public static String newRunId() {
+        return Long.toString(TsidGenerator.newInstance().generate());
     }
 }

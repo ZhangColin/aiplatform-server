@@ -62,10 +62,12 @@ public class ProjectAgentController {
     }
 
     @PostMapping("/waits/{waitId}/settle")
-    @Operation(summary = "答复等待点（问答答复 / 权限批准或拒绝 / 转任务关闭）",
-            description = "type=answer（answers=选项 label 二维）/ permission（approve）/ deferred（转任务，"
-                    + "任务动作归修复编排链后续版本）。agent 收到答复续跑；权限拒绝累计达上限由平台终止"
-                    + "（不形成审批循环）；成功后 SSE wait-settled（outcome=answered/approved/denied/deferred）")
+    @Operation(summary = "答复等待点（问答答复 / 权限批准或拒绝 / 转任务）",
+            description = "type=answer（answers=选项 label 二维）/ permission（approve）/ deferred（转任务："
+                    + "task={title, content?, assigneeAccountId} 必填——关等待点 + 建任务存 waitId 引用，"
+                    + "任务确认后自动复用原会话续跑（prompt=测试报告摘要））。agent 收到答复续跑；"
+                    + "权限拒绝累计达上限由平台终止（不形成审批循环）；成功后 SSE wait-settled"
+                    + "（outcome=answered/approved/denied/deferred）")
     public ApiResponse<Void> settle(@PathVariable String projectId,
                                     @PathVariable String waitId,
                                     @Valid @RequestBody ProjectWaitSettleCommand command) {

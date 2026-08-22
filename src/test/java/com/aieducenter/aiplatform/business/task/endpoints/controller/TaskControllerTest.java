@@ -19,6 +19,7 @@ import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.web.config.JacksonConfiguration;
 import com.cartisan.web.exception.GlobalExceptionHandler;
 
+import com.aieducenter.aiplatform.business.task.application.FixDispatchAppService;
 import com.aieducenter.aiplatform.business.task.application.TaskLifecycleAppService;
 import com.aieducenter.aiplatform.business.task.application.TaskQueryAppService;
 import com.aieducenter.aiplatform.business.task.application.dto.command.CreateTaskCommand;
@@ -67,6 +68,9 @@ class TaskControllerTest {
 
     @MockitoBean
     private TaskQueryAppService queryAppService;
+
+    @MockitoBean
+    private FixDispatchAppService fixDispatchAppService;
 
     /** A2 起全 /api/** 拦截——MVC 契约测试不走登录链，夹具直接注 RequestContext。 */
     private ResultActions performAsUser(RequestBuilder request) throws Exception {
@@ -265,6 +269,48 @@ class TaskControllerTest {
                 .andExpect(jsonPath("$.data[0].bugId").value("b1"))
                 .andExpect(jsonPath("$.data[0].fixRunId").value(nullValue()))
                 .andExpect(jsonPath("$.data[0].closedReason").value(nullValue()));
+    }
+
+    // ---------- 修复派发与手工关闭（A4 §4/#27） ----------
+
+    @Test
+    void given_project_bugs_when_dispatch_fixes_then_void_envelope_and_delegated()
+            throws Exception {
+        performAsUser(post("/api/projects/9001/bugs/dispatch-fixes"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        verify(fixDispatchAppService).dispatchFixes("9001");
+    }
+
+    @Test
+    void given_reason_when_close_bug_then_verified_envelope() throws Exception {
+        when(lifecycleAppService.closeBug(eq("9001"), eq(55L), eq("需求如此，非缺陷")))
+                .thenReturn(new BugResponse("b1", "9001", "t1", "未重现", null, null,
+                        BugSeverity.MINOR, "轻微", BugStatus.VERIFIED, "复测通过",
+                        null, null, "需求如此，非缺陷",
+                        LocalDateTime.of(2026, 8, 22, 8, 0), LocalDateTime.of(2026, 8, 22, 8, 0)));
+
+        performAsUser(post("/api/projects/9001/bugs/55/close")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\": \"需求如此，非缺陷\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value(3))
+                .andExpect(jsonPath("$.data.statusName").value("复测通过"))
+                .andExpect(jsonPath("$.data.closedReason").value("需求如此，非缺陷"));
+
+        verify(lifecycleAppService).closeBug("9001", 55L, "需求如此，非缺陷");
+    }
+
+    @Test
+    void given_blank_reason_when_close_bug_then_400_envelope() throws Exception {
+        performAsUser(post("/api/projects/9001/bugs/55/close")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\": \" \"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(lifecycleAppService, never()).closeBug(anyString(), anyLong(), anyString());
     }
 
     // ---------- 测试数据 ----------

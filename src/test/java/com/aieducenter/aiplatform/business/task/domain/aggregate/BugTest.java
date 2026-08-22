@@ -85,6 +85,109 @@ class BugTest {
                 .hasMessageContaining("VERIFIED");
     }
 
+    // ---------- 修复链状态口（#27，A4 §4） ----------
+
+    @Test
+    void given_open_bug_when_mark_dispatched_then_in_flight_marker_set() {
+        Bug bug = openBug();
+        bug.markFixDispatched("run-1");
+
+        assertThat(bug.getStatus()).isEqualTo(BugStatus.OPEN); // 派发不翻态
+        assertThat(bug.getFixRunId()).isEqualTo("run-1");
+    }
+
+    @Test
+    void given_marked_or_non_open_bug_when_mark_dispatched_then_task_002() {
+        // 幂等门：已标记/非 OPEN 不可再派
+        Bug marked = openBug();
+        marked.markFixDispatched("run-1");
+        assertThatThrownBy(() -> marked.markFixDispatched("run-2"))
+                .isInstanceOfSatisfying(DomainException.class, e ->
+                        assertThat(e.getCodeMessage().code()).isEqualTo("TASK_002"));
+
+        Bug fixed = fixedBug();
+        assertThatThrownBy(() -> fixed.markFixDispatched("run-2"))
+                .isInstanceOfSatisfying(DomainException.class, e ->
+                        assertThat(e.getCodeMessage().code()).isEqualTo("TASK_002"))
+                .hasMessageContaining("FIXED");
+    }
+
+    @Test
+    void given_in_flight_bug_when_mark_fixed_then_optimistic_flip_with_note() {
+        Bug bug = openBug();
+        bug.markFixDispatched("run-1");
+
+        assertThat(bug.markFixed("run-1", "已修复登录拦截")).isTrue();
+        assertThat(bug.getStatus()).isEqualTo(BugStatus.FIXED);
+        assertThat(bug.getFixRunId()).isEqualTo("run-1");
+        assertThat(bug.getFixNote()).isEqualTo("已修复登录拦截");
+    }
+
+    @Test
+    void given_late_finish_when_bug_left_open_or_marker_replaced_then_no_flip() {
+        // 迟到终态不覆盖后来状态：复测已裁决（VERIFIED）/ 手工已关闭 / 标记已换
+        Bug verified = openBug();
+        verified.applyRetestResult(true);
+        assertThat(verified.markFixed("run-1", "已修复")).isFalse();
+        assertThat(verified.getStatus()).isEqualTo(BugStatus.VERIFIED);
+
+        Bug replaced = openBug();
+        replaced.markFixDispatched("run-2");
+        assertThat(replaced.markFixed("run-1", "已修复")).isFalse();
+        assertThat(replaced.getStatus()).isEqualTo(BugStatus.OPEN);
+    }
+
+    @Test
+    void given_in_flight_bug_when_abandon_then_back_to_dispatchable_pool() {
+        Bug bug = openBug();
+        bug.markFixDispatched("run-1");
+
+        assertThat(bug.abandonFixRun("run-1")).isTrue();
+        assertThat(bug.getStatus()).isEqualTo(BugStatus.OPEN);
+        assertThat(bug.getFixRunId()).isNull();
+
+        // runId 不匹配不清（迟到终态不清别人的标记）
+        Bug others = openBug();
+        others.markFixDispatched("run-2");
+        assertThat(others.abandonFixRun("run-1")).isFalse();
+        assertThat(others.getFixRunId()).isEqualTo("run-2");
+    }
+
+    @Test
+    void given_fixed_bug_when_retest_fail_then_fix_fields_cleared() {
+        // 退回 OPEN 即回可派发池：in-flight 判定归零（fix_run_id 清 NULL），旧结论作废
+        Bug bug = fixedBug();
+
+        bug.applyRetestResult(false);
+
+        assertThat(bug.getStatus()).isEqualTo(BugStatus.OPEN);
+        assertThat(bug.getFixRunId()).isNull();
+        assertThat(bug.getFixNote()).isNull();
+    }
+
+    @Test
+    void given_bogus_bug_when_close_manually_then_verified_with_reason() {
+        Bug openBug = openBug();
+        openBug.closeManually("需求如此，非缺陷");
+        assertThat(openBug.getStatus()).isEqualTo(BugStatus.VERIFIED);
+        assertThat(openBug.getClosedReason()).isEqualTo("需求如此，非缺陷");
+
+        Bug fixedBug = fixedBug(); // 修复完但 bogus：同样可关
+        fixedBug.closeManually("未重现，本地无法复现");
+        assertThat(fixedBug.getStatus()).isEqualTo(BugStatus.VERIFIED);
+
+        // reason 必填（TASK_010）+ VERIFIED 终态再关 TASK_002（不加第四态）
+        assertThatThrownBy(() -> openBug().closeManually(" "))
+                .hasMessageContaining(TaskMessage.BUG_CLOSE_REASON_REQUIRED.message());
+        assertThatThrownBy(() -> openBug().closeManually(null))
+                .hasMessageContaining(TaskMessage.BUG_CLOSE_REASON_REQUIRED.message());
+        Bug closed = openBug();
+        closed.closeManually("关了");
+        assertThatThrownBy(() -> closed.closeManually("再关"))
+                .isInstanceOfSatisfying(DomainException.class, e ->
+                        assertThat(e.getCodeMessage().code()).isEqualTo("TASK_002"));
+    }
+
     // ---------- 测试数据 ----------
 
     private static Bug openBug() {

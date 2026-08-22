@@ -23,7 +23,9 @@ public enum TaskMessage implements CodeMessage {
 
     ASSIGNEE_NOT_FOUND(404, "TASK_008", "指派账号不存在"),
 
-    TASK_NOT_OWNER(403, "TASK_009", "仅项目归属账号可执行该操作（dev 动作）");
+    TASK_NOT_OWNER(403, "TASK_009", "仅项目归属账号可执行该操作（dev 动作）"),
+
+    BUG_CLOSE_REASON_REQUIRED(400, "TASK_010", "Bug 关闭理由必填");
 
     private final int httpStatus;
     private final String code;

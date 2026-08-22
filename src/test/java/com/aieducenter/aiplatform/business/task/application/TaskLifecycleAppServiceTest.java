@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +22,10 @@ import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.core.exception.CartisanException;
 
+import com.aieducenter.aiplatform.base.agentengine.application.AgentRunContext;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppService;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.identity.domain.aggregate.Account;
 import com.aieducenter.aiplatform.business.identity.domain.repository.AccountRepository;
@@ -46,7 +51,9 @@ import com.aieducenter.aiplatform.business.task.domain.repository.BugRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.ArgumentMatchers.eq;
@@ -95,6 +102,23 @@ class TaskLifecycleAppServiceTest {
 
     @MockitoBean
     private PlatformNotificationAppService notificationAppService;
+
+    /** 底座编排入口 mock：confirm 触发的修复链不真发引擎（终态裁决在
+     * FixDispatchAppServiceTest 覆盖，这里只断言触发与幂等）。 */
+    @MockitoBean
+    private AgentTaskAppService agentTaskAppService;
+
+    @BeforeEach
+    void stubDispatchAccepted() {
+        org.mockito.Mockito.when(agentTaskAppService.dispatch(
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> new AgentTaskResponse(
+                        invocation.getArgument(2, AgentRunContext.class).runId(),
+                        "ses-fix", "opencode", true));
+    }
 
     @AfterEach
     void tearDown() {
@@ -290,6 +314,146 @@ class TaskLifecycleAppServiceTest {
 
         // 一过一退：仍有未关闭 Bug → G3 不就绪
         assertThat(openBugQueryPort.hasOpenBugs(projectId)).isTrue();
+    }
+
+    // ---------- 确认触发修复链（A4 §4 触发①②，#27） ----------
+
+    @Test
+    void given_bugs_confirmed_when_confirm_then_fix_chain_triggered() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = submittedFirstRound(projectId, assignee, List.of(
+                new SubmitTaskCommand.BugPayload("登录 500", "提交后 500", "1. 打开登录页",
+                        BugSeverity.CRITICAL)));
+
+        asUser(DEV_OWNER, () -> appService.confirm(taskId));
+
+        // 首轮确认入库 OPEN → 事务提交后自动触发修复链：一 run 派出、Bug 行挂 in-flight 标记
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService, times(1)).dispatch(anyString(), command.capture(),
+                any(), any());
+        assertThat(command.getValue().prompt()).contains("登录 500");
+        assertThat(bugRows(projectId).get(0).get("fix_run_id")).isNotNull();
+    }
+
+    @Test
+    void given_empty_bugs_confirmed_when_confirm_then_no_fix_dispatch() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = submittedFirstRound(projectId, assignee, List.of());
+
+        asUser(DEV_OWNER, () -> appService.confirm(taskId));
+
+        // 空 Bug 清单（测试全过）：无修复派发
+        verify(agentTaskAppService, never()).dispatch(anyString(), any(), any(), any());
+    }
+
+    @Test
+    void given_retest_fail_when_confirm_then_returned_bug_redispatched() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = createdTaskOf(projectId, assignee);
+        Bug fixed = bugRepository.save(Bug.fixedOf(projectId, taskId, "登录 500",
+                "run-9", "已修复登录拦截"));
+
+        asUser(assignee, () -> appService.start(taskId));
+        asUser(assignee, () -> appService.submit(taskId, new SubmitTaskCommand(
+                "复测报告", null,
+                List.of(new SubmitTaskCommand.RetestResultPayload(fixed.getId(), false, "仍复现")))));
+        asUser(DEV_OWNER, () -> appService.confirm(taskId));
+
+        // 复测退回 OPEN（修复字段清空）→ 自动再派发修复（A4 §4 触发②）
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService, times(1)).dispatch(anyString(), command.capture(),
+                any(), any());
+        assertThat(command.getValue().prompt()).contains("登录 500");
+        Map<String, Object> row = bugRow(fixed.getId());
+        assertThat(row.get("status")).isEqualTo(1); // 退回 OPEN
+        assertThat(row.get("fix_run_id")).isNotNull(); // 新修复 run 已挂
+        assertThat(row.get("fix_note")).isNull(); // 旧结论已作废
+    }
+
+    // ---------- 转任务来源（A1 §3.1 第 1 步，#27） ----------
+
+    @Test
+    void given_deferred_task_when_confirmed_then_completed_carries_wait_id() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+
+        TaskResponse created = asUser(DEV_OWNER, () -> appService.createFromWait(projectId,
+                "wait-abc", new CreateTaskCommand("调研框架", "去调研后端选型", assignee)));
+        Long taskId = Long.parseLong(created.taskId());
+
+        // waitId 不透明引用随任务落库（REST 建任务不带——waitId 列程序化专用）
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT wait_id FROM tsk_tasks WHERE id = ?", String.class, taskId))
+                .isEqualTo("wait-abc");
+        // 非 owner 经端口建任务同守卫：TASK_009
+        assertThatThrownBy(() -> asUser(assignee, () -> appService.createFromWait(projectId,
+                "wait-abc", new CreateTaskCommand("越权", "内容", assignee))))
+                .hasMessageContaining(TaskMessage.TASK_NOT_OWNER.message());
+
+        asUser(assignee, () -> appService.start(taskId));
+        asUser(assignee, () -> appService.submit(taskId,
+                new SubmitTaskCommand("结论：用 X", List.of(), null)));
+        asUser(DEV_OWNER, () -> appService.confirm(taskId));
+
+        // TaskCompleted 带 waitId——project 侧回填续跑的锚点（A1 §3.1 第 3 步）
+        assertThat(completedRecorder.committed).hasSize(1);
+        assertThat(completedRecorder.committed.get(0).waitId()).isEqualTo("wait-abc");
+        assertThat(completedRecorder.committed.get(0).summary()).contains("结论：用 X");
+    }
+
+    // ---------- bogus 手工关闭（A4 §4，#27） ----------
+
+    @Test
+    void given_bogus_bug_when_close_then_verified_with_reason() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = createdTaskOf(projectId, assignee);
+        Bug bogus = bugRepository.save(Bug.openOf(projectId, taskId, "未重现", null, null,
+                BugSeverity.MINOR));
+        Bug fixedBogus = bugRepository.save(Bug.fixedOf(projectId, taskId, "样式错位",
+                "run-9", "已修"));
+
+        asUser(DEV_OWNER, () -> appService.closeBug(projectId.toString(), bogus.getId(),
+                "需求如此，非缺陷"));
+        asUser(DEV_OWNER, () -> appService.closeBug(projectId.toString(), fixedBogus.getId(),
+                "未重现，本地无法复现"));
+
+        // OPEN/FIXED 均可关 → VERIFIED + closed_reason（唯一关闭态的带理由别名动作）
+        assertThat(bugRow(bogus.getId())).containsEntry("status", 3)
+                .containsEntry("closed_reason", "需求如此，非缺陷");
+        assertThat(bugRow(fixedBogus.getId()).get("status")).isEqualTo(3);
+        assertThat(openBugQueryPort.hasOpenBugs(projectId)).isFalse(); // G3 谓词不变
+
+        // VERIFIED 终态再关 TASK_002；reason 空 TASK_010；非归属 TASK_009
+        assertThatThrownBy(() -> asUser(DEV_OWNER, () -> appService.closeBug(
+                projectId.toString(), bogus.getId(), "再关")))
+                .isInstanceOfSatisfying(CartisanException.class, e ->
+                        assertThat(e.getCodeMessage().code()).isEqualTo("TASK_002"));
+        assertThatThrownBy(() -> asUser(DEV_OWNER, () -> appService.closeBug(
+                projectId.toString(), fixedBogus.getId(), " ")))
+                .hasMessageContaining(TaskMessage.BUG_CLOSE_REASON_REQUIRED.message());
+        assertThatThrownBy(() -> asUser(assignee, () -> appService.closeBug(
+                projectId.toString(), fixedBogus.getId(), "越权")))
+                .hasMessageContaining(TaskMessage.TASK_NOT_OWNER.message());
+    }
+
+    @Test
+    void given_foreign_bug_when_close_then_task_005() throws Exception {
+        Long projectId = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long otherProject = persistedProjectWithStage(ProjectMainChain.STAGE_TEST, DEV_OWNER);
+        Long assignee = persistedAccount("sub-opc", "外包测试");
+        Long taskId = createdTaskOf(projectId, assignee);
+        Long foreignBug = bugRepository.save(Bug.openOf(otherProject, taskId, "别家 Bug",
+                null, null, BugSeverity.MINOR)).getId();
+
+        assertThatThrownBy(() -> asUser(DEV_OWNER, () -> appService.closeBug(
+                projectId.toString(), foreignBug, "越界")))
+                .hasMessageContaining(TaskMessage.BUG_NOT_FOUND.message());
     }
 
     // ---------- dev 动作 owner 守卫（A4 §6 视角列） ----------

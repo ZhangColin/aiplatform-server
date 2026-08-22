@@ -1,18 +1,18 @@
 package com.aieducenter.aiplatform.business.project.application;
 
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.cartisan.core.exception.ApplicationException;
-import com.cartisan.data.jpa.id.TsidGenerator;
-
 import com.aieducenter.aiplatform.base.agentengine.application.AgentRunContext;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
+import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
@@ -48,6 +48,9 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ProjectAgentTaskAppService {
 
+    /** 修复 run 的计量角色维度值（A4 §4：与 DEV 开发用量区分的用途标记）。 */
+    public static final String FIX_ROLE_DIM = "FIX";
+
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
     private final AgentTaskAppService agentTaskAppService;
@@ -82,7 +85,7 @@ public class ProjectAgentTaskAppService {
         String stage = openIteration != null ? openIteration.getStage()
                 : ProjectMainChain.STAGE_CLOSED;
 
-        String runId = newRunId();
+        String runId = AgentRunContext.newRunId();
         emitRoleAssigned(projectId, runId, role, stage, project.getEngine());
 
         AgentTaskResponse result = agentTaskAppService.dispatch(
@@ -113,6 +116,49 @@ public class ProjectAgentTaskAppService {
             }
         }
         // stage 为下发时快照（首个测试任务的任务本身发起于开发段，计数已落测试段）
+        return new ProjectAgentTaskResponse(result.runId(), result.sessionId(),
+                result.engine(), role, role.getName(), stage, result.accepted());
+    }
+
+    /**
+     * 修复 run 下发（A4 §4 落码归属，#27 修复编排链经此复用片5 编排）：DEV 类
+     * preset（systemPrompt/modelId——修复就是写代码），计量 dims 以 role=FIX
+     * 区分修复用量（SSE role-assigned 照 DEV preset 报——呈现的是干活的角色卡，
+     * 计量记的是用途）；SSE 桥接与阶段计数全继承 dispatchTask。期 CLOSED（无
+     * OPEN 期，期后修复）无期可挂，跳过阶段计数——工具正交。runId 由编排方
+     * （task BC 链）生成传入（Bug 行先落 in-flight 标记再下发，重启可恢复）；
+     * {@code eventObserver} 收底座流桥逐帧回调——链在其上收终态（task-finish/
+     * error）。不处 advance：修复不是测试任务，开发→测试唯一触发不涉。
+     */
+    public ProjectAgentTaskResponse dispatchFixRun(Long projectId, String prompt, String runId,
+                                                   Consumer<AgentEvent> eventObserver) {
+        Project project = requireProject(projectId);
+        Iteration openIteration = iterationRepository
+                .findByProjectIdAndStatus(projectId, IterationStatus.OPEN)
+                .orElse(null);
+        RolePreset role = RolePreset.DEV;
+        String stage = openIteration != null ? openIteration.getStage()
+                : ProjectMainChain.STAGE_CLOSED;
+
+        emitRoleAssigned(projectId, runId, role, stage, project.getEngine());
+
+        AgentTaskResponse result = agentTaskAppService.dispatch(
+                Long.toString(project.getWorkspaceId()),
+                new AgentTaskDispatchCommand(prompt, role.systemPrompt(),
+                        role.modelId(), project.getEngine(), null),
+                new AgentRunContext(runId,
+                        new UsageContext(Long.toString(projectId),
+                                Map.of("role", FIX_ROLE_DIM, "stage", stage)),
+                        Map.of(AgentStreamAppService.PROJECT_FIELD, Long.toString(projectId))),
+                eventObserver);
+
+        if (result.accepted() && openIteration != null) {
+            // 修复 run 计入当前阶段计数——测试段 minTasks=1 由修复 run 凑上（A4 §5）
+            transactionTemplate.executeWithoutResult(status -> {
+                openIteration.recordStageTask();
+                iterationRepository.save(openIteration);
+            });
+        }
         return new ProjectAgentTaskResponse(result.runId(), result.sessionId(),
                 result.engine(), role, role.getName(), stage, result.accepted());
     }
@@ -182,8 +228,4 @@ public class ProjectAgentTaskAppService {
                 .orElseThrow(() -> new ApplicationException(ProjectMessage.PROJECT_NOT_FOUND));
     }
 
-    /** runId 生成（任务端点生成，ADR-0001）：TSID 十进制字符串（与底座同构）。 */
-    private String newRunId() {
-        return Long.toString(TsidGenerator.newInstance().generate());
-    }
 }

@@ -18,6 +18,7 @@ import com.aieducenter.aiplatform.business.project.application.ProjectAgentTaskA
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.task.application.dto.command.CreateTaskCommand;
 import com.aieducenter.aiplatform.business.task.application.dto.command.SubmitTaskCommand;
+import com.aieducenter.aiplatform.business.task.application.dto.response.BugResponse;
 import com.aieducenter.aiplatform.business.task.application.dto.response.TaskDetailResponse;
 import com.aieducenter.aiplatform.business.task.application.dto.response.TaskResponse;
 import com.aieducenter.aiplatform.business.task.application.event.TaskCompleted;
@@ -57,6 +58,7 @@ public class TaskLifecycleAppService {
     private final ApplicationEventPublisher eventPublisher;
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
+    private final FixDispatchAppService fixDispatchAppService;
 
     public TaskLifecycleAppService(TaskRepository taskRepository,
                                    BugRepository bugRepository,
@@ -67,7 +69,8 @@ public class TaskLifecycleAppService {
                                    PlatformNotificationAppService notificationAppService,
                                    ApplicationEventPublisher eventPublisher,
                                    TransactionTemplate transactionTemplate,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   FixDispatchAppService fixDispatchAppService) {
         this.taskRepository = taskRepository;
         this.bugRepository = bugRepository;
         this.agentTaskAppService = agentTaskAppService;
@@ -78,6 +81,7 @@ public class TaskLifecycleAppService {
         this.eventPublisher = eventPublisher;
         this.transactionTemplate = transactionTemplate;
         this.objectMapper = objectMapper;
+        this.fixDispatchAppService = fixDispatchAppService;
     }
 
     /**
@@ -89,13 +93,32 @@ public class TaskLifecycleAppService {
      */
     public TaskResponse create(String projectId, CreateTaskCommand command) {
         Long parsed = projectQueryAppService.requireProjectId(projectId);
-        requireProjectOwner(parsed);
+        return createInternal(parsed, command, null);
+    }
+
+    /**
+     * 转任务建任务（A1 §3.1 第 1 步，#27 回填链起点）：settle(Deferred) 关等待点
+     * 后由 project 侧经端口调入（waitId 不透明引用随任务落库——REST 面不收，
+     * TaskCompleted 据此续跑原会话）。守卫链与 {@link #create} 同构（项目寻址
+     * 由调用方先行）。
+     *
+     * @throws ApplicationException TASK_009 非项目归属账号（403）；TASK_008 指派
+     *                              账号不存在
+     */
+    public TaskResponse createFromWait(Long projectId, String waitId,
+                                       CreateTaskCommand command) {
+        return createInternal(projectId, command, waitId);
+    }
+
+    /** 建任务共用内核（项目寻址后）：owner → 指派 → advance 守卫 → 落库 → SSE。 */
+    private TaskResponse createInternal(Long projectId, CreateTaskCommand command, String waitId) {
+        requireProjectOwner(projectId);
         if (!accountAppService.exists(command.assigneeAccountId())) {
             throw new ApplicationException(TaskMessage.ASSIGNEE_NOT_FOUND);
         }
-        agentTaskAppService.advanceToTestOnTestTaskCreation(parsed);
-        Task task = taskRepository.save(Task.publish(parsed, TaskType.TEST,
-                command.title(), command.content(), command.assigneeAccountId(), null));
+        agentTaskAppService.advanceToTestOnTestTaskCreation(projectId);
+        Task task = taskRepository.save(Task.publish(projectId, TaskType.TEST,
+                command.title(), command.content(), command.assigneeAccountId(), waitId));
         emitTaskUpdated(task);
         return queryAppService.assemble(task);
     }
@@ -138,7 +161,8 @@ public class TaskLifecycleAppService {
      * dev confirm（A4 §3 确认时点；owner 守卫防自确认）：一事务内——任务终态 +
      * Bug 批量落库（首轮 OPEN）或复测翻态（pass → VERIFIED / fail → 退回 OPEN）
      * + TaskCompleted 应用事件（AFTER_COMMIT）。空 Bug 清单允许：确认后无入库，
-     * G3 直接就绪。
+     * G3 直接就绪。事务块之后触发修复派发（A4 §4 触发①②——有 OPEN 可派才起链，
+     * 无则空转；in-flight 幂等门在链内）。
      *
      * @throws ApplicationException TASK_007/002/005/006 同上（载荷在事务内复验）；
      *                              TASK_009 非项目归属账号（403）
@@ -172,7 +196,25 @@ public class TaskLifecycleAppService {
                     task.getWaitId(), summaryOf(payload)));
         });
         emitTaskUpdated(task);
+        // AFTER_COMMIT 语义（事务块之后）：修复链起跑（首轮入库/复测退回均有 OPEN 可派）
+        fixDispatchAppService.onConfirmed(task.getProjectId());
         return queryAppService.detailOf(task);
+    }
+
+    /**
+     * bogus Bug 手工关闭（A4 §4，#27）：reason 必填 → VERIFIED + closed_reason
+     * （复测通过唯一关闭态的带理由别名动作，不加第四态）。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在；TASK_005 Bug 不存在/跨项目；
+     *                              TASK_010 reason 空；TASK_009 非归属（403）
+     */
+    public BugResponse closeBug(String projectId, Long bugId, String reason) {
+        Long parsed = projectQueryAppService.requireProjectId(projectId);
+        requireProjectOwner(parsed);
+        Bug bug = requireProjectBug(bugId, parsed);
+        bug.closeManually(reason); // reason 必填由聚合不变量兜底（REST 面 @NotBlank 先行同码）
+        Bug saved = bugRepository.save(bug);
+        return queryAppService.bugOf(saved);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.aieducenter.aiplatform.base.agentengine.application;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +36,16 @@ public class AgentSessionAppService {
         return sessionRepository.findByWorkspaceIdOrderByCreatedAtDesc(id).stream()
                 .map(AgentSessionAppService::toResponse)
                 .toList();
+    }
+
+    /**
+     * 单查会话（sessionId 全局寻址）：任务回填续跑前的存活校验入口（A1 §3.2
+     * 陈旧防护——会话已亡跳过不抛）。
+     */
+    @Transactional(readOnly = true)
+    public Optional<AgentSessionResponse> session(String sessionId) {
+        return sessionRepository.findBySessionId(sessionId)
+                .map(AgentSessionAppService::toResponse);
     }
 
     private static AgentSessionResponse toResponse(AgentSession session) {

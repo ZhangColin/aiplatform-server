@@ -205,6 +205,11 @@ public class TaskQueryAppService {
 
     // ---------- 组装（生命周期用例复用） ----------
 
+    /** 单 Bug 响应组装（手工关闭等单行回读）。 */
+    BugResponse bugOf(Bug bug) {
+        return toBugResponse(bug);
+    }
+
     /** 单任务响应组装（批量显示名走 {@link #assembleAll}）。 */
     TaskResponse assemble(Task task) {
         return assembleAll(List.of(task)).get(0);

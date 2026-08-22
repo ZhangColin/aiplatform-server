@@ -124,7 +124,8 @@ public class Bug extends Auditable implements AggregateRoot<Bug, Long> {
 
     /**
      * 复测结果翻态（A4 §3）：pass=true → VERIFIED（唯一关闭态）；pass=false →
-     * 退回 OPEN（自动再派发随 #27）。VERIFIED 是终态——再翻即 TASK_002。
+     * 退回 OPEN（清修复派发字段——退回即回可派发池，in-flight 判定归零，#27）。
+     * VERIFIED 是终态——再翻即 TASK_002。
      */
     public void applyRetestResult(boolean pass) {
         if (status == BugStatus.VERIFIED) {
@@ -132,6 +133,69 @@ public class Bug extends Auditable implements AggregateRoot<Bug, Long> {
                     status.name(), pass ? BugStatus.VERIFIED.name() : BugStatus.OPEN.name());
         }
         this.status = pass ? BugStatus.VERIFIED : BugStatus.OPEN;
+        if (!pass) {
+            this.fixRunId = null; // 旧 run 引用作废（新修复 run 落新引用/新结论）
+            this.fixNote = null;
+        }
+    }
+
+    /**
+     * 修复 run 派发标记（#27 链）：in-flight 判定 = OPEN ∧ fixRunId 非空。
+     * 仅 OPEN ∧ 未标记可派（幂等门），否则 TASK_002——并发/重复派发的守门。
+     */
+    public void markFixDispatched(String runId) {
+        if (status != BugStatus.OPEN || fixRunId != null
+                || runId == null || runId.isBlank()) {
+            throw new DomainException(TaskMessage.ILLEGAL_TRANSITION,
+                    status.name(), BugStatus.FIXED.name());
+        }
+        this.fixRunId = runId.strip();
+    }
+
+    /**
+     * 修复 run 正常收尾的乐观翻转（#27 链 sink 收终态）：OPEN → FIXED + 记
+     * fixRunId/fixNote（run 最终消息——「未重现」等结论如实记）。非 OPEN 或
+     * runId 不匹配（复测已裁决/手工已关闭/标记已被替换）返回 false——迟到的
+     * 终态不覆盖后来状态。真伪由复测裁决——三态里复测本就是兜底。
+     */
+    public boolean markFixed(String runId, String fixNote) {
+        if (status != BugStatus.OPEN || !runId.equals(this.fixRunId)) {
+            return false;
+        }
+        this.status = BugStatus.FIXED;
+        this.fixNote = fixNote == null ? null : fixNote.strip();
+        return true;
+    }
+
+    /**
+     * 修复 run 失败/孤儿回收（#27 链 error/timeout 与重启恢复）：fixRunId 匹配
+     * ∧ OPEN 才清（迟到终态不清别人的标记）——fixRunId 置 NULL 回可派发池。
+     * 返回是否清理（false = 无事可做）。
+     */
+    public boolean abandonFixRun(String runId) {
+        if (status != BugStatus.OPEN || !runId.equals(this.fixRunId)) {
+            return false;
+        }
+        this.fixRunId = null;
+        return true;
+    }
+
+    /**
+     * bogus 手工关闭（A4 §4，#27）：OPEN/FIXED → VERIFIED + closedReason——
+     * 复测通过这一唯一关闭态的带理由别名动作，**不加第四态**（G3 谓词不变）；
+     * VERIFIED 终态再关即 TASK_002。修复派发字段不动（审计留痕）。
+     */
+    public void closeManually(String reason) {
+        if (reason == null || reason.isBlank()
+                || reason.length() > CLOSED_REASON_MAX_LENGTH) {
+            throw new DomainException(TaskMessage.BUG_CLOSE_REASON_REQUIRED);
+        }
+        if (status == BugStatus.VERIFIED) {
+            throw new DomainException(TaskMessage.ILLEGAL_TRANSITION,
+                    status.name(), BugStatus.VERIFIED.name());
+        }
+        this.status = BugStatus.VERIFIED;
+        this.closedReason = reason.strip();
     }
 
     // ---------- 内部 ----------

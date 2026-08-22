@@ -27,6 +27,7 @@ import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
 import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
+import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentTaskCommand;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.RunResult;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
@@ -358,6 +359,52 @@ class AgentTaskAppServiceTest {
         assertThatThrownBy(() -> new AgentRunContext("run-biz-1", null,
                 Map.of("type", "x")))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ---------- 编排事件观察者（#27 修复编排链的 sink 缝） ----------
+
+    @Test
+    void given_event_observer_when_dispatch_then_frames_relayed_after_base_handling() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+        CopyOnWriteArrayList<String> observed = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<String> baseHandledBeforeObserver = new CopyOnWriteArrayList<>();
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
+                new AgentRunContext("run-biz-1", null, Map.of()),
+                event -> {
+                    observed.add(event.type());
+                    if (AgentEventTypes.TASK_FINISH.equals(event.type())) {
+                        // 观察者在底座桥之后收帧：run 终态等待点联动已发生
+                        verify(waitAppService).expireRun(event.payload().get("runId").toString());
+                        baseHandledBeforeObserver.add(event.payload().get("runId").toString());
+                    }
+                });
+
+        // 适配器全帧同序回调（含过程帧与终态帧——编排方自行裁决）
+        assertThat(observed).containsExactly("task-start", "task-finish");
+        assertThat(baseHandledBeforeObserver).containsExactly("run-biz-1");
+    }
+
+    @Test
+    void given_throwing_observer_when_dispatch_then_base_bridge_unaffected() {
+        stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
+        when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
+                new AgentRunContext("run-biz-1", null, Map.of()),
+                event -> {
+                    throw new IllegalStateException("编排方链内异常");
+                });
+
+        // 观察者异常不拖垮底座流桥：SSE 两帧照发、无异常外抛
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("task-start", "task-finish");
+        verify(waitAppService).expireRun("run-biz-1");
     }
 
     // ---------- 替身与工具 ----------

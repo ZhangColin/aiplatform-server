@@ -82,6 +82,18 @@ public class AgentTaskAppService {
      */
     public AgentTaskResponse dispatch(String workspaceId, AgentTaskDispatchCommand command,
                                       AgentRunContext runContext) {
+        return dispatch(workspaceId, command, runContext, null);
+    }
+
+    /**
+     * 下发任务（编排事件观察者缝，#27 修复编排链）：{@code eventObserver} 在底座
+     * 流桥处理完每帧后同线程回调（含过程事件与终态 task-finish/error）——编排方
+     * 持 sink 收终态的入口（A4 §4「链是进程内 sink 回调」）。观察者异常不拖垮
+     * 底座桥（SSE 透传/等待点联动照常），编排方链护栏自行兜底。
+     */
+    public AgentTaskResponse dispatch(String workspaceId, AgentTaskDispatchCommand command,
+                                      AgentRunContext runContext,
+                                      Consumer<AgentEvent> eventObserver) {
         WorkspaceHandle handle = workspaceHandleClient.handleOf(workspaceId);
         AgentEngineRegistry.RegisteredEngine engine = command.engine() == null || command.engine().isBlank()
                 ? registry.defaultEngine() : registry.require(command.engine());
@@ -101,7 +113,8 @@ public class AgentTaskAppService {
                 command.sessionId(), usageContext);
 
         RunResult result = engine.adapter().runTask(handle, taskCommand,
-                streamSink(workspaceId, runContext == null ? null : runContext.streamCorrelation()));
+                observed(streamSink(workspaceId,
+                        runContext == null ? null : runContext.streamCorrelation()), eventObserver));
         if (result.accepted()) {
             recordSession(handle.workspaceId().id(), engine.info().name(),
                     result.sessionId(), runId);
@@ -202,6 +215,22 @@ public class AgentTaskAppService {
                 }
             }
             streamAppService.publish(event.type(), payload);
+        };
+    }
+
+    /** 观察者包装：底座桥处理完毕后回调；观察者异常只记日志不断流桥。 */
+    private static Consumer<AgentEvent> observed(Consumer<AgentEvent> sink,
+                                                 Consumer<AgentEvent> observer) {
+        if (observer == null) {
+            return sink;
+        }
+        return event -> {
+            sink.accept(event);
+            try {
+                observer.accept(event);
+            } catch (RuntimeException e) {
+                log.warn("[agentengine] 编排事件观察者异常（{}）：{}", event.type(), e.getMessage());
+            }
         };
     }
 
