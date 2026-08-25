@@ -52,6 +52,14 @@ app:
       provider: deepseek
       id: deepseek-v4-pro
     timeout-minutes: 30
+  # #44 · base.chatagent：对话智能体内核（ADR-0002 AgentScope HarnessAgent）默认值。
+  # API Key 走 DEEPSEEK_API_KEY 环境变量（AgentScope ModelRegistry 自行读取）；
+  # workspace 留空用 AgentScope 默认，项目工作区接线归 #45。
+  chatagent:
+    agent-name: chat-agent
+    default-model: deepseek:deepseek-v4-flash
+    default-system-prompt: 你是平台对话智能体。
+    timeout: 2m
 
 # A2 · business.identity：OIDC BFF 认证（sso.* 七项，照 identity demo SsoProperties）。
 # 凭据只落本地环境变量（.env.local，gitignored），不进 git——见 docs/guide/本机依赖启动.md。

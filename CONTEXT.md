@@ -54,6 +54,10 @@ _Avoid_: 运行（一次执行过程）、需求调研会话（业务侧对话�
 智能体运行过程的增量事件（文本、思考、工具调用、代码补丁）——与 LLM 交互过程流的细化，一次运行一连串。
 _Avoid_: 平台通知（那是状态变化广播，两类不混）
 
+**对话智能体（Conversational Agent）**：
+BA 等对话型角色的运行形态：平台进程内的 AgentScope HarnessAgent（base.chatagent，ADR-0002），per-call 以 RuntimeContext（sessionId/userId）寻址状态槽位；模型串 `provider:model`（白名单暂仅 deepseek），对话级用量埋点（engine=agentscope）。与编码引擎双轨分野：`Project.engine` 只指编码引擎，对话角色不走 opencode/dsh。
+_Avoid_: 与开发智能体/编码引擎概念混用（两类运行时、两套适配，不共享会话与引擎配置）
+
 **中间件资源（Middleware Resource）**：
 项目环境挂载的数据库 / Redis / 对象存储，随环境生命周期供给与隔离（attachResource）。
 

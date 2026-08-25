@@ -20,6 +20,8 @@
         <maven.compiler.target>21</maven.compiler.target>
         <postgresql.version>42.7.4</postgresql.version>
         <pitest.junit5.plugin.version>1.2.3</pitest.junit5.plugin.version>
+        <!-- 对话智能体内核（ADR-0002：AgentScope Java 2.0，基座票 #44） -->
+        <agentscope.version>2.0.1</agentscope.version>
     </properties>
 
     <dependencies>
@@ -133,6 +135,20 @@
             <groupId>com.alibaba</groupId>
             <artifactId>druid-spring-boot-3-starter</artifactId>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- 对话智能体内核（ADR-0002：BA 等对话角色走 AgentScope HarnessAgent，
+             与编码引擎 base.agentengine 双轨分立，接线在 #45） -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-harness</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+        <!-- DeepSeek 模型扩展（OpenAI 兼容栈：deepseek: 模型串 + DEEPSEEK_API_KEY） -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-model-openai</artifactId>
+            <version>${agentscope.version}</version>
         </dependency>
 
         <!-- Test -->

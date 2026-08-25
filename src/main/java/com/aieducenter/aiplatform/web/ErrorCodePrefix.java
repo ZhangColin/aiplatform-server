@@ -22,6 +22,9 @@ public enum ErrorCodePrefix {
     /** base.metering：计量（met_） */
     METER("METER_", "base.metering"),
 
+    /** base.chatagent：对话智能体（chat_，#44 引入、REST 面归 #45） */
+    CHAT("CHAT_", "base.chatagent"),
+
     /** business.project：项目主链（prj_） */
     PRJ("PRJ_", "business.project"),
 
