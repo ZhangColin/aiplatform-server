@@ -43,7 +43,7 @@ import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 
 /**
  * 项目主链 REST 面（demo ProjectController 的重写，B0 §2 片5）：对话建项目
- * （选引擎，建即自动跑 BA）→ 下任务 / 答复等待点（ProjectAgentController）→
+ * （引擎取后台全局配置，建即自动跑 BA）→ 下任务 / 答复等待点（ProjectAgentController）→
  * 门操作与收口（approve/reject，A3 §3/§5）→ 需求池 / 归档 / 详情 / 用量 /
  * PRD 读（#41）→ 源码包下载（片5c 项目周边，票 #24）→ 预览 → 删除真删级联。
  */
@@ -70,7 +70,8 @@ public class ProjectController {
 
     @PostMapping
     @Operation(summary = "建项目（对话建项目：建即自动跑 BA 需求梳理）",
-            description = "选引擎（缺省 opencode）→ dev 工作区 + 专属 pg/redis 就绪 → 第 1 期（BA 段 OPEN）。"
+            description = "引擎 = 后台全局配置的生效引擎（/api/admin/engine-config，未配置时 opencode；"
+                    + "显式 engine 仍可覆盖，项目创建时固化）→ dev 工作区 + 专属 pg/redis 就绪 → 第 1 期（BA 段 OPEN）。"
                     + "响应携带自动 BA 运行 runId（挂 /api/agent-events?runId= 的锚）。"
                     + "SSE：workspace-created → stage-changed(BA) → agent 流事件")
     public ApiResponse<ProjectCreatedResponse> create(@Valid @RequestBody CreateProjectCommand command) {

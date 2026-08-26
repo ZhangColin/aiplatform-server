@@ -23,6 +23,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.command.Agent
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
+import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.EngineConfig;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
 import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage;
@@ -33,6 +34,7 @@ import com.aieducenter.aiplatform.base.agentengine.domain.model.RunResult;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
 import com.aieducenter.aiplatform.base.agentengine.domain.port.CodingAgentAdapter;
 import com.aieducenter.aiplatform.base.agentengine.domain.repository.AgentSessionRepository;
+import com.aieducenter.aiplatform.base.agentengine.domain.repository.EngineConfigRepository;
 import com.aieducenter.aiplatform.base.agentengine.infrastructure.WorkspaceHandleClient;
 import com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope;
 import com.aieducenter.aiplatform.base.eventhub.infrastructure.sse.RecordingSseSender;
@@ -65,6 +67,35 @@ class AgentTaskAppServiceTest {
     private AgentSessionRepository sessionRepository;
     @Mock
     private AgentWaitAppService waitAppService;
+    @Mock
+    private EngineConfigRepository engineConfigRepository;
+
+    /** 配置服务替身底座：无 stub 时 mock 缺省 Optional.empty → 缺省回落注册表缺省。 */
+    private EngineConfigAppService engineConfigService() {
+        return new EngineConfigAppService(engineConfigRepository,
+                new AgentEngineRegistry(java.util.List.of(stubAdapter, new DshStubAdapter())));
+    }
+
+    @Test
+    void given_global_config_engine_when_dispatch_without_engine_then_config_engine_routed() {
+        // 票 #42：任务下发缺省 = 后台全局配置的生效引擎（读库不缓存，切换后即新值）
+        DshStubAdapter dsh = new DshStubAdapter();
+        AgentEngineRegistry registry =
+                new AgentEngineRegistry(java.util.List.of(stubAdapter, dsh));
+        when(engineConfigRepository.findById(EngineConfig.SINGLETON_ID))
+                .thenReturn(Optional.of(EngineConfig.global("dsh")));
+        AgentTaskAppService configured = new AgentTaskAppService(handleClient, registry,
+                new EngineConfigAppService(engineConfigRepository, registry),
+                sessionRepository, new AgentStreamAppService(hub), waitAppService);
+        when(sessionRepository.findBySessionId("dsh-sid")).thenReturn(Optional.empty());
+
+        AgentTaskResponse response = configured.dispatch(Long.toString(WORKSPACE_ID),
+                new AgentTaskDispatchCommand("写个落地页", null, null, null, null));
+
+        assertThat(response.engine()).isEqualTo("dsh");
+        assertThat(dsh.received).hasSize(1); // 路由到配置引擎（opencode 替身零接收）
+        assertThat(stubAdapter.received).isEmpty();
+    }
 
     private final FakeWorkspaceHandleClient handleClient = new FakeWorkspaceHandleClient();
     private final StubAdapter stubAdapter = new StubAdapter();
@@ -78,7 +109,8 @@ class AgentTaskAppServiceTest {
                 Duration.ofSeconds(600));
         appService = new AgentTaskAppService(handleClient,
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, new DshStubAdapter())),
-                sessionRepository, new AgentStreamAppService(hub), waitAppService);
+                engineConfigService(), sessionRepository, new AgentStreamAppService(hub),
+                waitAppService);
     }
 
     @AfterEach
@@ -197,7 +229,8 @@ class AgentTaskAppServiceTest {
         dsh.nextSessionId = "dsh-new";
         AgentTaskAppService dshService = new AgentTaskAppService(handleClient,
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, dsh)),
-                sessionRepository, new AgentStreamAppService(hub), waitAppService);
+                engineConfigService(), sessionRepository, new AgentStreamAppService(hub),
+                waitAppService);
         AgentSession existing = AgentSession.open(WORKSPACE_ID, "dsh", "dsh-old", "run-old");
         when(sessionRepository.findBySessionId("dsh-old")).thenReturn(Optional.of(existing));
         when(sessionRepository.findBySessionId("dsh-new")).thenReturn(Optional.empty());

@@ -3,6 +3,7 @@ package com.aieducenter.aiplatform.base.agentengine.application;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.stereotype.Component;
 
@@ -60,14 +61,17 @@ public class AgentEngineRegistry {
     }
 
     /**
+     * 按名查引擎；未登记返回空（查询面，不抛——配置校验/缺省解析用）。
+     */
+    public Optional<RegisteredEngine> find(String engine) {
+        return engine == null ? Optional.empty() : Optional.ofNullable(engines.get(engine));
+    }
+
+    /**
      * 按名取引擎；未登记抛 AGT_001（404）。
      */
     public RegisteredEngine require(String engine) {
-        RegisteredEngine registered = engines.get(engine);
-        if (registered == null) {
-            throw new ApplicationException(AgentEngineMessage.ENGINE_NOT_FOUND);
-        }
-        return registered;
+        return find(engine).orElseThrow(() -> new ApplicationException(AgentEngineMessage.ENGINE_NOT_FOUND));
     }
 
     /**

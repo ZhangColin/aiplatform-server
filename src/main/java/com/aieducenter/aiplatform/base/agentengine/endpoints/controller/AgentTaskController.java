@@ -49,8 +49,9 @@ public class AgentTaskController {
     @Operation(summary = "下发任务", description = """
             runId 平台生成并随响应返回（该运行全部 agent 流事件携带）。异步：立即返回，
             过程事件经 `GET /api/agent-events` 透传。systemPrompt/modelId 是入参（适配层
-            零角色概念）；sessionId 非空 = 复用既有会话续跑；engine 缺省 opencode
-            （可选值见 `GET /api/agent-engines`）。""")
+            零角色概念）；sessionId 非空 = 复用既有会话续跑；engine 缺省 = 后台全局
+            配置的生效引擎（`GET /api/admin/engine-config`，未配置时 opencode；
+            可选值见 `GET /api/agent-engines`）。""")
     public ApiResponse<AgentTaskResponse> dispatch(
             @Parameter(description = "工作区 id（TSID 字符串）") @PathVariable String workspaceId,
             @Valid @RequestBody AgentTaskDispatchCommand command) {

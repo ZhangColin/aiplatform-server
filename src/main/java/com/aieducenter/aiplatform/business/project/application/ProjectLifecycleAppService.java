@@ -10,6 +10,7 @@ import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentEngineRegistry;
+import com.aieducenter.aiplatform.base.agentengine.application.EngineConfigAppService;
 import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.CreateWorkspaceCommand;
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.WorkspaceResponse;
@@ -50,6 +51,7 @@ public class ProjectLifecycleAppService {
     private final WorkspaceLifecycleAppService workspaceLifecycleAppService;
     private final BaInterviewAppService baInterviewAppService;
     private final AgentEngineRegistry engineRegistry;
+    private final EngineConfigAppService engineConfigAppService;
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
     private final ProjectQueryAppService queryAppService;
@@ -60,6 +62,7 @@ public class ProjectLifecycleAppService {
     public ProjectLifecycleAppService(WorkspaceLifecycleAppService workspaceLifecycleAppService,
                                       BaInterviewAppService baInterviewAppService,
                                       AgentEngineRegistry engineRegistry,
+                                      EngineConfigAppService engineConfigAppService,
                                       ProjectRepository projectRepository,
                                       IterationRepository iterationRepository,
                                       ProjectQueryAppService queryAppService,
@@ -69,6 +72,7 @@ public class ProjectLifecycleAppService {
         this.workspaceLifecycleAppService = workspaceLifecycleAppService;
         this.baInterviewAppService = baInterviewAppService;
         this.engineRegistry = engineRegistry;
+        this.engineConfigAppService = engineConfigAppService;
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
         this.queryAppService = queryAppService;
@@ -78,7 +82,8 @@ public class ProjectLifecycleAppService {
     }
 
     /**
-     * 建项目（选引擎）：引擎校验先行（无 Docker 副作用）→ dev 工作区落定 →
+     * 建项目：引擎解析先行（缺省 = 后台全局配置生效引擎，票 #42；显式传入校验
+     * PRJ_002，先于 Docker 副作用）→ dev 工作区落定 →
      * 一事务 Project + 第 1 期（BA/OPEN/计数 0）→ SSE 双通知 → 自动开始 BA 访谈
      * （#40 对话轨道，经 {@link BaInterviewAppService}）。
      * BA 起跑失败不回滚建项目（项目已成立，失败原因经 error 事件/日志表达）。
@@ -187,10 +192,13 @@ public class ProjectLifecycleAppService {
 
     // ---------- 内部 ----------
 
-    /** 引擎解析：空 = 注册表缺省；未知名 PRJ_002（建项目入参校验，先于 Docker 副作用）。 */
+    /**
+     * 引擎解析：空 = 后台全局配置的生效引擎（票 #42：平台统一配置，未配置回落
+     * 注册表缺省）；未知名 PRJ_002（建项目入参校验，先于 Docker 副作用）。
+     */
     private String resolveEngine(String engine) {
         if (engine == null || engine.isBlank()) {
-            return engineRegistry.defaultEngine().info().name();
+            return engineConfigAppService.activeEngineName();
         }
         try {
             return engineRegistry.require(engine.trim()).info().name();

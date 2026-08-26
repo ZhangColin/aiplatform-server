@@ -49,17 +49,20 @@ public class AgentTaskAppService {
 
     private final WorkspaceHandleClient workspaceHandleClient;
     private final AgentEngineRegistry registry;
+    private final EngineConfigAppService engineConfigAppService;
     private final AgentSessionRepository sessionRepository;
     private final AgentStreamAppService streamAppService;
     private final AgentWaitAppService waitAppService;
 
     public AgentTaskAppService(WorkspaceHandleClient workspaceHandleClient,
                                AgentEngineRegistry registry,
+                               EngineConfigAppService engineConfigAppService,
                                AgentSessionRepository sessionRepository,
                                AgentStreamAppService streamAppService,
                                AgentWaitAppService waitAppService) {
         this.workspaceHandleClient = workspaceHandleClient;
         this.registry = registry;
+        this.engineConfigAppService = engineConfigAppService;
         this.sessionRepository = sessionRepository;
         this.streamAppService = streamAppService;
         this.waitAppService = waitAppService;
@@ -95,8 +98,9 @@ public class AgentTaskAppService {
                                       AgentRunContext runContext,
                                       Consumer<AgentEvent> eventObserver) {
         WorkspaceHandle handle = workspaceHandleClient.handleOf(workspaceId);
+        // 缺省引擎 = 后台全局配置（票 #42：服务端统一配置，读库不缓存即时生效）
         AgentEngineRegistry.RegisteredEngine engine = command.engine() == null || command.engine().isBlank()
-                ? registry.defaultEngine() : registry.require(command.engine());
+                ? engineConfigAppService.activeEngine() : registry.require(command.engine());
         String runId = runContext != null && runContext.runId() != null && !runContext.runId().isBlank()
                 ? runContext.runId() : newRunId();
         if (command.sessionId() != null && !command.sessionId().isBlank()) {

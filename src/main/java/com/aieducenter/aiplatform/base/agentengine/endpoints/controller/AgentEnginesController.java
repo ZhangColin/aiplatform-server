@@ -31,7 +31,8 @@ public class AgentEnginesController {
     @Operation(summary = "引擎能力矩阵", description = """
             显式注册表全量（换引擎 = 实现端口 + 注册表登记，前端自动出现新选项）：
             name/label/questionSupported/permissionSupported/note。任务下发 engine 参数
-            取 name；缺省 opencode。""")
+            取 name；缺省 = 后台全局配置的生效引擎（`GET /api/admin/engine-config`，
+            未配置时 opencode）。""")
     public ApiResponse<List<AgentEngineRegistry.EngineInfo>> matrix() {
         return ApiResponse.ok(registry.matrix());
     }

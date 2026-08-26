@@ -90,6 +90,36 @@ class ProjectLifecycleAppServiceTest {
     void tearDown() {
         jdbcTemplate.update("DELETE FROM prj_iterations");
         jdbcTemplate.update("DELETE FROM prj_projects");
+        jdbcTemplate.update("DELETE FROM agt_engine_config"); // 票 #42：全局配置行不跨用例残留
+    }
+
+    @Test
+    void given_global_config_switched_when_create_without_engine_then_new_engine_fixed() {
+        // 票 #42 验收：后台切引擎 → 之后新建项目用新引擎（创建时读全局配置固化进项目记录）
+        jdbcTemplate.update("INSERT INTO agt_engine_config (id, active_engine) VALUES (1, 'dsh')");
+        stubWorkspace("9102", "aiplatform-dev-102");
+        stubInterviewAccepted("run-1");
+
+        ProjectCreatedResponse response = appService.create(
+                new CreateProjectCommand("切换后项目", null, null, "做一个官网"));
+
+        assertThat(response.project().engine()).isEqualTo("dsh");
+        assertThat(projectRepository.findById(Long.parseLong(response.project().id())))
+                .hasValueSatisfying(project -> assertThat(project.getEngine())
+                        .isEqualTo("dsh")); // 固化：存量口径的数据源（后续任务不再问配置）
+    }
+
+    @Test
+    void given_global_config_when_create_with_explicit_engine_then_explicit_wins() {
+        // 显式 engine 覆盖全局配置（参数移除归 #39）；存量项目固化创建时引擎同源本列
+        jdbcTemplate.update("INSERT INTO agt_engine_config (id, active_engine) VALUES (1, 'dsh')");
+        stubWorkspace("9103", "aiplatform-dev-103");
+        stubInterviewAccepted("run-1");
+
+        ProjectCreatedResponse response = appService.create(
+                new CreateProjectCommand("显式引擎项目", null, "opencode", "做一个官网"));
+
+        assertThat(response.project().engine()).isEqualTo("opencode");
     }
 
     @Test

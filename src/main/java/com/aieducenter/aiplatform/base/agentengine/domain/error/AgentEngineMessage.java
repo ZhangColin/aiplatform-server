@@ -22,7 +22,12 @@ public enum AgentEngineMessage implements CodeMessage {
     /** 陈旧等待点答复（非 PENDING）或会话不可续跑——A1 §1.3 避雷「陈旧批准非法跳变」。 */
     WAIT_CONFLICT(409, "AGT_007", "等待点已关闭或会话不可续跑"),
 
-    WAIT_FIELDS_INCOMPLETE(400, "AGT_008", "等待点字段不完整");
+    WAIT_FIELDS_INCOMPLETE(400, "AGT_008", "等待点字段不完整"),
+
+    /** 后台切换入参不在注册表（票 #42）：PUT 值校验，400——区别于寻址语义的 404 AGT_001。 */
+    ENGINE_CONFIG_UNKNOWN(400, "AGT_009", "未知的开发智能体引擎"),
+
+    ENGINE_CONFIG_FIELDS_INCOMPLETE(400, "AGT_010", "引擎配置字段不完整");
 
     private final int httpStatus;
     private final String code;

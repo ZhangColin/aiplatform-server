@@ -33,7 +33,7 @@ _Avoid_: 领域事件（聚合内事件，已废弃不用）、agent 流事件�
 有代码能力的智能体（开发 / Review / 修 bug / 跑测试），经「开发智能体适配层」接入。
 
 **开发智能体引擎（Coding Agent Engine）**：
-一个具体的 coding agent 运行时（opencode / dsh），按项目选择，后端经 `CodingAgentAdapter` 路由。
+一个具体的 coding agent 运行时（opencode / dsh），后端经 `CodingAgentAdapter` 路由。平台用哪个引擎由服务端统一配置（后台切换，票 #42）——引擎选择不在创建参数与用户界面；生效口径 = 新项目生效（创建时固化进项目记录）、存量不迁（存量项目固化其创建时引擎跑完）。
 
 **开发智能体适配层（Coding Agent Adapter）**：
 抹平各引擎差异的薄 adapter：runTask / pendingQuestions / replyQuestions / replyPermission / health。systemPrompt 与 modelId 是入参——适配层不含角色概念。
