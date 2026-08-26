@@ -3,6 +3,7 @@ package com.aieducenter.aiplatform.base.agentengine.application.dto.response;
 import java.time.Instant;
 import java.util.Map;
 
+import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentWait;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitOutcome;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
@@ -33,5 +34,25 @@ public record WaitPointResponse(
         kindName = kind == null ? null : kind.getName();
         statusName = status == null ? null : status.getName();
         settleOutcomeName = settleOutcome == null ? null : settleOutcome.getName();
+    }
+
+    /** 聚合 → 响应（应用层读面共用映射：*Name 由紧凑构造器从枚举派生，null 占位）。 */
+    public static WaitPointResponse from(AgentWait wait) {
+        return new WaitPointResponse(
+                wait.getWaitId(),
+                Long.toString(wait.getWorkspaceId()),
+                wait.getSessionId(),
+                wait.getRunId(),
+                wait.getEngineRef(),
+                wait.getKind(),
+                null,
+                wait.getStatus(),
+                null,
+                wait.getSummary(),
+                wait.getBody(),
+                wait.getSettleOutcome(),
+                null,
+                wait.getRaisedAt(),
+                wait.getSettledAt());
     }
 }

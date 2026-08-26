@@ -5,11 +5,14 @@ import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import io.agentscope.core.event.ExceedMaxItersEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.ModelCallStartEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ThinkingBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallEndEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
+import io.agentscope.core.message.ToolUseBlock;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -29,9 +32,13 @@ import java.util.Optional;
  *   <tr><td>ToolCallStart / ToolCallEnd</td><td>{@code tool}</td><td>toolCallId / toolName / phase</td></tr>
  *   <tr><td>ModelCallStart / ModelCallEnd</td><td>{@code step-start} / {@code step-finish}</td><td>replyId</td></tr>
  *   <tr><td>ExceedMaxIters</td><td>（结煞语）</td><td>{@link #finishToken}</td></tr>
+ *   <tr><td>RequireUserConfirm</td><td>{@code wait-raised}</td><td>{@link #waitRaised}（挂起帧，settle 续跑归 #48 双向桥）</td></tr>
  * </table>
  *
- * <p>HITL 类事件（RequireUserConfirm 等）不在本表——等待点双向桥归 #48。</p>
+ * <p>HITL 挂起（{@code RequireUserConfirmEvent}）不是过程帧也不是终态：
+ * {@link #map} 不产透传帧、{@link #finishToken} 无结煞语，由调用方以
+ * {@link #waitRaised} 显式产帧发射（流桥落库成等待点）；挂起轮的收尾口径 =
+ * 不发 task-finish（run 尚未终态，等 settle 续跑后再收口）。</p>
  */
 final class AgentscopeEventMapper {
 
@@ -45,6 +52,9 @@ final class AgentscopeEventMapper {
     /** ExceedMaxIters 的结煞语（task-finish.finish，对齐「引擎结煞语」口径）。 */
     private static final String FINISH_EXCEED_MAX_ITERS = "exceed_max_iters";
     private static final String FINISH_END = "end";
+
+    /** 提问类工具（#48）：其确认挂起按 QUESTION 载荷形状呈现（向用户提问）。 */
+    private static final String ASK_USER_TOOL = AskUserTool.NAME;
 
     private final String runId;
     private final String sessionId;
@@ -95,6 +105,55 @@ final class AgentscopeEventMapper {
             return Optional.of(FINISH_EXCEED_MAX_ITERS);
         }
         return Optional.empty();
+    }
+
+    /** 挂起检出（#48）：RequireUserConfirm = 本轮流挂起（软终点，非终态）。 */
+    boolean isSuspension(io.agentscope.core.event.AgentEvent event) {
+        return event instanceof RequireUserConfirmEvent;
+    }
+
+    /**
+     * 挂起帧（#48 等待点双向桥 raise 侧）：{@code RequireUserConfirmEvent} →
+     * {@code wait-raised}——payload 按 {@link AgentEventTypes} WAIT_* 契约（流桥落库
+     * 成等待点）。kind 判定：待确认工具含提问类（ask_user，向用户提问）→ QUESTION
+     * 载荷形状；其余（工具参数确认/敏感动作）→ PERMISSION。data = 引擎载荷原样：
+     * toolCalls 待确认清单 + {@code resumeContext}（恢复私货——settle 侧据此重建
+     * ConfirmResult 续跑：modelString/userId/usageContext/streamCorrelation）。
+     */
+    AgentEvent waitRaised(RequireUserConfirmEvent event, Map<String, Object> resumeContext) {
+        List<ToolUseBlock> toolCalls = event.getToolCalls();
+        boolean question = toolCalls.stream()
+                .anyMatch(tc -> ASK_USER_TOOL.equals(tc.getName()));
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("type", question ? "question" : "permission");
+        data.put("toolCalls", toolCallPayloads(toolCalls));
+        data.putAll(resumeContext);
+        return new AgentEvent(AgentEventTypes.WAIT_RAISED, Map.of(
+                AgentEventTypes.WAIT_RUN_FIELD, runId,
+                AgentEventTypes.WAIT_SESSION_FIELD, sessionId,
+                "engine", engine,
+                AgentEventTypes.WAIT_KIND_FIELD, question ? "QUESTION" : "PERMISSION",
+                AgentEventTypes.WAIT_SUMMARY_FIELD, summaryOf(toolCalls),
+                AgentEventTypes.WAIT_ENGINE_REF_FIELD, nvl(event.getReplyId()),
+                AgentEventTypes.WAIT_DATA_FIELD, data));
+    }
+
+    /** 待确认工具清单载荷（id/name/input——ConfirmResult 重建所需的最小面）。 */
+    private static List<Map<String, Object>> toolCallPayloads(List<ToolUseBlock> toolCalls) {
+        return toolCalls.stream()
+                .map(tc -> {
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("id", nvl(tc.getId()));
+                    payload.put("name", nvl(tc.getName()));
+                    payload.put("input", tc.getInput() != null ? tc.getInput() : Map.of());
+                    return payload;
+                })
+                .toList();
+    }
+
+    /** 挂起中性短文本：首个待确认工具名（多工具同挂时以首工具概览）。 */
+    private static String summaryOf(List<ToolUseBlock> toolCalls) {
+        return toolCalls.isEmpty() ? "" : nvl(toolCalls.get(0).getName());
     }
 
     // ---------- run 生命周期帧（平台封闭集合，对齐编码引擎适配器帧形状） ----------

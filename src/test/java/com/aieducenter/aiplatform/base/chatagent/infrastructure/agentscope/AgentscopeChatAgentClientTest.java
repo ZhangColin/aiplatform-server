@@ -14,6 +14,7 @@ import com.aieducenter.aiplatform.base.chatagent.domain.error.ChatAgentMessage;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentCommand;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentWorkspace;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.UsageContext;
+import com.aieducenter.aiplatform.base.chatagent.infrastructure.ChatAgentSessionRecorder;
 import com.aieducenter.aiplatform.base.chatagent.infrastructure.ChatAgentWorkspaceClient;
 import com.aieducenter.aiplatform.base.metering.domain.model.UsageEvent;
 import com.aieducenter.aiplatform.base.metering.domain.port.UsageEventSink;
@@ -21,9 +22,13 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceId;
 import com.cartisan.core.exception.DomainException;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.ExceedMaxItersEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.model.ChatUsage;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -66,6 +71,9 @@ class AgentscopeChatAgentClientTest {
     @Mock
     private UsageEventSink usageEventSink;
 
+    @Mock
+    private ChatAgentSessionRecorder sessionRecorder;
+
     @Captor
     private ArgumentCaptor<UsageEvent> usageCaptor;
 
@@ -84,7 +92,7 @@ class AgentscopeChatAgentClientTest {
         properties.setDefaultSystemPrompt("你是平台对话智能体。");
         properties.setTimeout(Duration.ofSeconds(30));
         client = new AgentscopeChatAgentClient(factory, properties, workspaceClient,
-                usageEventSink, CLOCK);
+                sessionRecorder, usageEventSink, new ChatAgentResumeGate(Runnable::run), CLOCK);
     }
 
     private ChatAgentCommand command(String modelString, UsageContext usage) {
@@ -94,7 +102,7 @@ class AgentscopeChatAgentClientTest {
 
     private void givenStream(io.agentscope.core.event.AgentEvent... events) {
         when(factory.obtain(any(), any(), any(), any())).thenReturn(agent);
-        when(agent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(agent.streamEvents(any(List.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.fromIterable(List.of(events)));
     }
 
@@ -163,7 +171,7 @@ class AgentscopeChatAgentClientTest {
         client.converse(command(null, null), event -> {
         });
 
-        verify(agent).streamEvents(any(UserMessage.class), contextCaptor.capture());
+        verify(agent).streamEvents(any(List.class), contextCaptor.capture());
         assertThat(contextCaptor.getValue().getSessionId()).isEqualTo("s-1");
         assertThat(contextCaptor.getValue().getUserId()).isEqualTo("alice");
     }
@@ -246,7 +254,7 @@ class AgentscopeChatAgentClientTest {
     @Test
     void given_stream_error_when_converse_then_error_frame_then_domain_exception() {
         when(factory.obtain(any(), any(), any(), any())).thenReturn(agent);
-        when(agent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(agent.streamEvents(any(List.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.error(new RuntimeException("boom")));
 
         List<AgentEvent> frames = new ArrayList<>();
@@ -263,7 +271,7 @@ class AgentscopeChatAgentClientTest {
     @Test
     void given_stream_error_after_model_call_when_converse_then_consumed_usage_still_reported() {
         when(factory.obtain(any(), any(), any(), any())).thenReturn(agent);
-        when(agent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(agent.streamEvents(any(List.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.concat(
                         Flux.just(new ModelCallEndEvent("r-1", new ChatUsage(100, 40, 0, 0.5))),
                         Flux.error(new RuntimeException("mid-stream boom"))));
@@ -287,5 +295,92 @@ class AgentscopeChatAgentClientTest {
 
         verify(factory).obtain(eq("chat-agent"), eq("你是平台对话智能体。"),
                 eq("deepseek:deepseek-v4-flash"), any());
+    }
+
+    // ---------- #48：挂起语义 / resume / 会话持久判定 ----------
+
+    @Test
+    void given_confirm_event_when_converse_then_wait_raised_and_no_task_finish() {
+        givenStream(
+                new TextBlockDeltaEvent("r-1", "b-1", "需要确认一个操作："),
+                new RequireUserConfirmEvent("reply-9", List.of(
+                        new ToolUseBlock("tc-1", "write_file", Map.of("path", "docs/PRD.md")))));
+
+        List<AgentEvent> frames = new ArrayList<>();
+        client.converse(command(null, null), frames::add);
+
+        // 挂起 = 软终点：wait-raised 发出（流桥落库成等待点），不发 task-finish
+        assertThat(frames.stream().map(AgentEvent::type)).containsExactly(
+                AgentEventTypes.TASK_START, AgentEventTypes.SESSION_CREATED,
+                "text", AgentEventTypes.WAIT_RAISED);
+        AgentEvent wait = frames.get(3);
+        assertThat(wait.payload()).containsEntry(AgentEventTypes.WAIT_ENGINE_REF_FIELD, "reply-9");
+        assertThat(wait.payload()).containsEntry(AgentEventTypes.WAIT_KIND_FIELD, "PERMISSION");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = (Map<String, Object>) wait.payload()
+                .get(AgentEventTypes.WAIT_DATA_FIELD);
+        assertThat(data.get("modelString")).isEqualTo("deepseek:deepseek-v4-flash");
+        assertThat(data.get("userId")).isEqualTo("alice");
+        assertThat(data.get("usageContext")).isEqualTo(Map.of());
+    }
+
+    @Test
+    void given_resume_request_when_resume_then_confirm_results_in_metadata_and_finishes() {
+        when(factory.obtain(any(), any(), any(), any())).thenReturn(agent);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Msg>> messages = ArgumentCaptor.forClass(List.class);
+        when(agent.streamEvents(any(List.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.just(new TextBlockDeltaEvent("r-2", "b-2", "续跑中")));
+
+        List<AgentEvent> frames = new ArrayList<>();
+        client.resume(new AgentscopeChatAgentClient.ChatAgentResume(
+                "run-1", "s-1", "alice", null, "deepseek:deepseek-v4-flash", null, "reply-9",
+                List.of(new ConfirmResult(true,
+                        new ToolUseBlock("tc-1", "write_file", Map.of("path", "x")))),
+                "approved", null, Map.of("projectId", "42")), frames::add);
+
+        // 恢复消息带 ConfirmResult metadata（AgentScope 挂起恢复口）；续跑流正常收口
+        verify(agent).streamEvents(messages.capture(), any(RuntimeContext.class));
+        Msg resumeMsg = messages.getValue().get(0);
+        assertThat(resumeMsg.getMetadata()
+                .get(Msg.METADATA_CONFIRM_RESULTS)).isInstanceOf(List.class);
+        assertThat(resumeMsg.getTextContent()).isEqualTo("approved");
+        assertThat(frames.stream().map(AgentEvent::type)).containsExactly(
+                "text", AgentEventTypes.TASK_FINISH);
+        verify(factory).obtain(any(), any(), eq("deepseek:deepseek-v4-flash"), any());
+    }
+
+    @Test
+    void given_workspace_session_absent_when_converse_then_recorded_and_session_created() {
+        givenStream(new TextBlockDeltaEvent("r-1", "b-1", "hi"));
+        when(workspaceClient.handleOf("42")).thenReturn(WorkspaceHandle.dev(
+                WorkspaceId.of("42"), "ws-42-dev", "net-42", 0, 0));
+        when(sessionRecorder.recordIfAbsent("42", "s-1", "run-1")).thenReturn(true);
+        ChatAgentCommand cmd = new ChatAgentCommand("run-1", "你好", null, null, "s-1",
+                "alice", null, "42", Map.of());
+
+        List<AgentEvent> frames = new ArrayList<>();
+        client.converse(cmd, frames::add);
+
+        verify(sessionRecorder).recordIfAbsent("42", "s-1", "run-1");
+        assertThat(frames.stream().map(AgentEvent::type)).contains(
+                AgentEventTypes.SESSION_CREATED);
+    }
+
+    @Test
+    void given_workspace_session_already_recorded_when_converse_then_session_created_skipped() {
+        // 跨重启会话行已存在（首见判定持久化）：不重发 session-created
+        givenStream(new TextBlockDeltaEvent("r-1", "b-1", "hi"));
+        when(workspaceClient.handleOf("42")).thenReturn(WorkspaceHandle.dev(
+                WorkspaceId.of("42"), "ws-42-dev", "net-42", 0, 0));
+        when(sessionRecorder.recordIfAbsent("42", "s-1", "run-2")).thenReturn(false);
+        ChatAgentCommand cmd = new ChatAgentCommand("run-2", "继续", null, null, "s-1",
+                "alice", null, "42", Map.of());
+
+        List<AgentEvent> frames = new ArrayList<>();
+        client.converse(cmd, frames::add);
+
+        assertThat(frames.stream().map(AgentEvent::type))
+                .doesNotContain(AgentEventTypes.SESSION_CREATED);
     }
 }

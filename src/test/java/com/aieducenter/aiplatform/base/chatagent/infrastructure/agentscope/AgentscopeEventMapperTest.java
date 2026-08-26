@@ -9,6 +9,7 @@ import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.ExceedMaxItersEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.ModelCallStartEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.TextBlockEndEvent;
 import io.agentscope.core.event.ThinkingBlockDeltaEvent;
@@ -165,6 +166,83 @@ class AgentscopeEventMapperTest {
         void other_events_have_no_finish_token() {
             assertThat(mapper.finishToken(new TextBlockDeltaEvent("r", "b", "d"))).isEmpty();
             assertThat(mapper.finishToken(new AgentEndEvent("reply-1"))).isEmpty();
+        }
+    }
+
+    @Nested
+    class WaitFrames {
+
+        @Test
+        void confirm_event_maps_to_wait_raised_frame_with_contract_keys() {
+            RequireUserConfirmEvent event = new RequireUserConfirmEvent("reply-9", java.util.List.of(
+                    toolCall("tc-1", "write_file", Map.of("path", "docs/PRD.md"))));
+
+            AgentEvent frame = mapper.waitRaised(event, resumeContext("deepseek:deepseek-v4-flash"));
+
+            assertThat(frame.type()).isEqualTo(AgentEventTypes.WAIT_RAISED);
+            assertThat(frame.payload()).containsAllEntriesOf(Map.of(
+                    AgentEventTypes.WAIT_RUN_FIELD, RUN_ID,
+                    AgentEventTypes.WAIT_SESSION_FIELD, SESSION_ID,
+                    AgentEventTypes.WAIT_KIND_FIELD, "PERMISSION",
+                    AgentEventTypes.WAIT_SUMMARY_FIELD, "write_file",
+                    AgentEventTypes.WAIT_ENGINE_REF_FIELD, "reply-9",
+                    "engine", ENGINE));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> data = (Map<String, Object>) frame.payload()
+                    .get(AgentEventTypes.WAIT_DATA_FIELD);
+            // 引擎载荷原样：待确认工具清单 + 恢复私货（settle 侧据此重建 ConfirmResult）
+            assertThat(data.get("toolCalls")).isEqualTo(java.util.List.of(
+                    Map.of("id", "tc-1", "name", "write_file", "input", Map.of("path", "docs/PRD.md"))));
+            assertThat(data.get("modelString")).isEqualTo("deepseek:deepseek-v4-flash");
+            assertThat(data.get("userId")).isEqualTo("u-1");
+            assertThat(data.get("usageContext")).isEqualTo(Map.of("subject", 42L, "dims", Map.of()));
+            assertThat(data.get("streamCorrelation")).isEqualTo(Map.of("projectId", "42"));
+        }
+
+        @Test
+        void ask_user_tool_maps_to_question_kind() {
+            // 向用户提问（ask_user）= QUESTION 载荷形状；工具参数确认/敏感动作 = PERMISSION
+            RequireUserConfirmEvent event = new RequireUserConfirmEvent("reply-10", java.util.List.of(
+                    toolCall("tc-2", "ask_user", Map.of("question", "用哪个框架?"))));
+
+            AgentEvent frame = mapper.waitRaised(event, resumeContext("deepseek:deepseek-v4-flash"));
+
+            assertThat(frame.payload()).containsEntry(
+                    AgentEventTypes.WAIT_KIND_FIELD, "QUESTION");
+            assertThat(frame.payload()).containsEntry(
+                    AgentEventTypes.WAIT_SUMMARY_FIELD, "ask_user");
+        }
+
+        @Test
+        void confirm_event_yields_no_passthrough_frame() {
+            // 挂起不是过程帧：wait-raised 由调用方显式发射，map() 不重复产帧
+            RequireUserConfirmEvent event = new RequireUserConfirmEvent("reply-11", java.util.List.of(
+                    toolCall("tc-3", "write_file", Map.of())));
+
+            assertThat(mapper.map(event)).isNull();
+        }
+
+        @Test
+        void confirm_event_is_a_suspension_not_finish() {
+            // 挂起轮的流终止不是终态：无结煞语、挂起标志可检出
+            assertThat(mapper.finishToken(new RequireUserConfirmEvent("reply-12",
+                    java.util.List.of(toolCall("tc-4", "write_file", Map.of()))))).isEmpty();
+            assertThat(mapper.isSuspension(new RequireUserConfirmEvent("reply-13",
+                    java.util.List.of(toolCall("tc-5", "write_file", Map.of()))))).isTrue();
+            assertThat(mapper.isSuspension(new TextBlockDeltaEvent("r", "b", "d"))).isFalse();
+        }
+
+        private io.agentscope.core.message.ToolUseBlock toolCall(String id, String name,
+                Map<String, Object> input) {
+            return new io.agentscope.core.message.ToolUseBlock(id, name, input);
+        }
+
+        private Map<String, Object> resumeContext(String modelString) {
+            return Map.of(
+                    "modelString", modelString,
+                    "userId", "u-1",
+                    "usageContext", Map.of("subject", 42L, "dims", Map.of()),
+                    "streamCorrelation", Map.of("projectId", "42"));
         }
     }
 }

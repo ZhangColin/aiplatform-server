@@ -55,7 +55,7 @@ public class AgentWaitAppService {
 
     private final AgentWaitRepository waitRepository;
     private final AgentSessionRepository sessionRepository;
-    private final AgentEngineRegistry registry;
+    private final WaitResponderDirectory responders;
     private final WorkspaceHandleClient workspaceHandleClient;
     private final int denyCap;
     private final Clock clock;
@@ -63,21 +63,21 @@ public class AgentWaitAppService {
     @Autowired
     public AgentWaitAppService(AgentWaitRepository waitRepository,
                                AgentSessionRepository sessionRepository,
-                               AgentEngineRegistry registry,
+                               WaitResponderDirectory responders,
                                WorkspaceHandleClient workspaceHandleClient,
                                @Value("${app.agent.wait-deny-cap:3}") int denyCap) {
-        this(waitRepository, sessionRepository, registry, workspaceHandleClient,
+        this(waitRepository, sessionRepository, responders, workspaceHandleClient,
                 denyCap, Clock.systemUTC());
     }
 
     public AgentWaitAppService(AgentWaitRepository waitRepository,
                                AgentSessionRepository sessionRepository,
-                               AgentEngineRegistry registry,
+                               WaitResponderDirectory responders,
                                WorkspaceHandleClient workspaceHandleClient,
                                int denyCap, Clock clock) {
         this.waitRepository = waitRepository;
         this.sessionRepository = sessionRepository;
-        this.registry = registry;
+        this.responders = responders;
         this.workspaceHandleClient = workspaceHandleClient;
         this.denyCap = denyCap;
         this.clock = clock;
@@ -105,7 +105,7 @@ public class AgentWaitAppService {
         });
         log.info("[agentengine] 等待点登记 waitId={} kind={} session={} run={}",
                 wait.getWaitId(), kind, sessionId, runId);
-        return toResponse(wait);
+        return WaitPointResponse.from(wait);
     }
 
     /**
@@ -131,7 +131,7 @@ public class AgentWaitAppService {
         return waitRepository
                 .findByWorkspaceIdAndStatusOrderByRaisedAtDesc(
                         resolveWorkspaceId(workspaceId), WaitStatus.PENDING)
-                .stream().map(AgentWaitAppService::toResponse).toList();
+                .stream().map(WaitPointResponse::from).toList();
     }
 
     /**
@@ -139,7 +139,7 @@ public class AgentWaitAppService {
      */
     @Transactional(readOnly = true)
     public Optional<WaitPointResponse> wait(String waitId) {
-        return waitRepository.findById(waitId).map(AgentWaitAppService::toResponse);
+        return waitRepository.findById(waitId).map(WaitPointResponse::from);
     }
 
     /**
@@ -161,7 +161,7 @@ public class AgentWaitAppService {
     @Transactional(readOnly = true)
     public List<WaitPointResponse> listPendingWaits() {
         return waitRepository.findByStatusOrderByRaisedAtDesc(WaitStatus.PENDING)
-                .stream().map(AgentWaitAppService::toResponse).toList();
+                .stream().map(WaitPointResponse::from).toList();
     }
 
     /**
@@ -262,7 +262,7 @@ public class AgentWaitAppService {
         }
         log.warn("[agentengine] run {} 内权限拒绝累计 {} 次达上限（deny cap={}），平台终止运行",
                 runId, denies, denyCap);
-        boolean aborted = registry.require(session.getEngine()).adapter()
+        boolean aborted = responders.require(session.getEngine())
                 .abort(handle, session.getSessionId());
         if (!aborted) {
             log.warn("[agentengine] run {} 平台终止未生效（引擎侧无运行或终止失败）", runId);
@@ -275,7 +275,7 @@ public class AgentWaitAppService {
     private void replyAnswers(WorkspaceHandle handle, AgentWait wait, AgentSession session,
                               WaitSettlement.Answer answer) {
         try {
-            registry.require(session.getEngine()).adapter()
+            responders.require(session.getEngine())
                     .replyQuestions(handle, wait.getSessionId(), wait.getEngineRef(),
                             answer.answers());
         } catch (RuntimeException e) {
@@ -286,7 +286,7 @@ public class AgentWaitAppService {
     private void replyPermission(WorkspaceHandle handle, AgentWait wait, AgentSession session,
                                  WaitSettlement.PermissionDecision decision) {
         try {
-            registry.require(session.getEngine()).adapter()
+            responders.require(session.getEngine())
                     .replyPermission(handle, wait.getSessionId(), wait.getEngineRef(),
                             decision.approve());
         } catch (RuntimeException e) {
@@ -349,26 +349,6 @@ public class AgentWaitAppService {
     private ApplicationException engineRequestFailed(RuntimeException e) {
         log.warn("[agentengine] 等待点答复引擎交互失败：{}", e.getMessage());
         return new ApplicationException(AgentEngineMessage.ENGINE_REQUEST_FAILED, e.getMessage());
-    }
-
-    private static WaitPointResponse toResponse(AgentWait wait) {
-        // *Name 随附字段由 record 紧凑构造器从枚举派生（null 传导 null），此处传 null 占位
-        return new WaitPointResponse(
-                wait.getWaitId(),
-                Long.toString(wait.getWorkspaceId()),
-                wait.getSessionId(),
-                wait.getRunId(),
-                wait.getEngineRef(),
-                wait.getKind(),
-                null,
-                wait.getStatus(),
-                null,
-                wait.getSummary(),
-                wait.getBody(),
-                wait.getSettleOutcome(),
-                null,
-                wait.getRaisedAt(),
-                wait.getSettledAt());
     }
 
     private static String text(Map<String, Object> payload, String key) {

@@ -32,7 +32,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p>DEEPSEEK_API_KEY 未设置时整类跳过（Assumption，不失败）：流式/计量/幂等键
  * 行为在 {@code AgentscopeChatAgentClientTest}（mock 事件流）已覆盖，本类只验
- * 真内核接线。workspace 与 AgentState 经临时目录隔离，不写 ~/.agentscope。</p>
+ * 真内核接线。workspace 经临时目录隔离；AgentState 落 PG（#48），冒烟槽位
+ * 每轮清理。</p>
  */
 @SpringBootTest
 class ChatAgentConverseSmokeTest {
@@ -56,8 +57,6 @@ class ChatAgentConverseSmokeTest {
         String key = System.getenv("DEEPSEEK_API_KEY");
         Assumptions.assumeTrue(key != null && !key.isBlank(),
                 "DEEPSEEK_API_KEY 未设置，跳过真实对话冒烟");
-        System.setProperty("agentscope.state.home",
-                agentscopeHome.resolve("state").toString());
     }
 
     @BeforeEach
@@ -70,6 +69,8 @@ class ChatAgentConverseSmokeTest {
     void restoreAndClean() {
         chatAgentProperties.setWorkspace(workspaceBackup);
         jdbcTemplate.update("DELETE FROM met_usage_events WHERE run_id LIKE 'smoke-chat-%'");
+        // #48 会话状态落 PG：冒烟槽位清理（无 workspaceId 走本地工作区，状态仍在库）
+        jdbcTemplate.update("DELETE FROM cat_agent_state WHERE user_id = 'smoke-user'");
     }
 
     @Test

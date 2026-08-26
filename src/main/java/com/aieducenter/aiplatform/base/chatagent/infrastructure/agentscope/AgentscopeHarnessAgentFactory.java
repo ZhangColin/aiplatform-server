@@ -1,24 +1,33 @@
 package com.aieducenter.aiplatform.base.chatagent.infrastructure.agentscope;
 
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentWorkspace;
+import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
 import java.util.concurrent.ConcurrentHashMap;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * HarnessAgent 构建工厂（#44 建、#45 工作区分型）：agent 无状态（per-session 靠
- * RuntimeContext 寻址），同规格（name + sysPrompt + model + workspace）构建一次、
- * 进程内复用；容器关闭时统一释放（HarnessAgent 是 AutoCloseable）。
+ * HarnessAgent 构建工厂（#44 建、#45 工作区分型、#48 状态落库）：agent 无状态
+ * （per-session 靠 RuntimeContext 寻址），同规格（name + sysPrompt + model +
+ * workspace）构建一次、进程内复用；容器关闭时统一释放（HarnessAgent 是
+ * AutoCloseable）。
  *
  * <p>工作区两形态（{@link ChatAgentWorkspace}）：{@link ChatAgentWorkspace.Local Local}
  * 本地目录直用（#44 既有口径）；{@link ChatAgentWorkspace.ProjectDev ProjectDev}
  * 项目 dev 工作区——经 {@code abstractFilesystem} 逃生舱换 {@link DockerExecFilesystem}
  * （docker exec 落既有 dev 容器），并关闭会写 harness 内脏进项目工作区的部件
- * （subagents / memory：源码包是交付物，记忆文件不进包；会话恢复归 #48；2.0.1
- * 无 transcript 部件）——工作区上下文（AGENTS.md 等）与 workspace/tools.json
- * 读取照常，经容器文件面即项目事实。
+ * （subagents / memory：源码包是交付物，记忆文件不进包；2.0.1 无 transcript 部件）
+ * ——工作区上下文（AGENTS.md 等）与 workspace/tools.json 读取照常，经容器文件面
+ * 即项目事实。</p>
+ *
+ * <p>会话状态（#48）：全形态统一接 {@link PostgresAgentStateStore}（cat_agent_state，
+ * (userId, sessionId) 槽位）——平台重启后同一会话标识恢复续跑，访谈上下文不丢；
+ * 替换框架缺省的本地 JSON 文件实现（单机 {@code ~/.agentscope/state/}，多副本/
+ * 重启语义不成立）。</p>
  */
 @Slf4j
 @Component
@@ -35,12 +44,16 @@ public class AgentscopeHarnessAgentFactory implements DisposableBean {
 
     private final ConcurrentHashMap<String, HarnessAgent> agents = new ConcurrentHashMap<>();
     private final AgentBuilder builder;
+    private final AgentStateStore stateStore;
 
-    public AgentscopeHarnessAgentFactory() {
-        this(AgentscopeHarnessAgentFactory::buildAgent);
+    @Autowired
+    public AgentscopeHarnessAgentFactory(AgentStateStore stateStore) {
+        this(stateStore, (name, sysPrompt, modelString, workspace) ->
+                buildAgent(stateStore, name, sysPrompt, modelString, workspace));
     }
 
-    AgentscopeHarnessAgentFactory(AgentBuilder builder) {
+    AgentscopeHarnessAgentFactory(AgentStateStore stateStore, AgentBuilder builder) {
+        this.stateStore = stateStore;
         this.builder = builder;
     }
 
@@ -66,12 +79,14 @@ public class AgentscopeHarnessAgentFactory implements DisposableBean {
         agents.clear();
     }
 
-    private static HarnessAgent buildAgent(String name, String sysPrompt, String modelString,
-            ChatAgentWorkspace workspace) {
+    private static HarnessAgent buildAgent(AgentStateStore stateStore, String name,
+            String sysPrompt, String modelString, ChatAgentWorkspace workspace) {
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name(name)
                 .sysPrompt(sysPrompt)
-                .model(modelString);
+                .model(modelString)
+                .stateStore(stateStore)
+                .toolkit(interviewToolkit());
         switch (workspace) {
             case ChatAgentWorkspace.Local local -> {
                 if (local.root() != null) {
@@ -87,5 +102,15 @@ public class AgentscopeHarnessAgentFactory implements DisposableBean {
                     .disableMemoryTools();
         }
         return builder.build();
+    }
+
+    /**
+     * 访谈工具集（#48）：平台自有的对话智能体工具——ask_user（向用户提问挂起）。
+     * 工具无状态可共享；后续 BA 访谈工具（savePrd 等，#40）在此追加。
+     */
+    private static Toolkit interviewToolkit() {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerAgentTool(new AskUserTool());
+        return toolkit;
     }
 }

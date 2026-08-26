@@ -1,11 +1,14 @@
 package com.aieducenter.aiplatform.base.chatagent.infrastructure.agentscope;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentWorkspace;
+import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -15,12 +18,18 @@ import org.junit.jupiter.api.Test;
 /**
  * {@link AgentscopeHarnessAgentFactory} 实例缓存与生命周期（#44：HarnessAgent
  * 无状态可复用，per-session 靠 RuntimeContext，同规格构建恰一次；#45：工作区
- * 身份入规格键——不同容器不复用、同容器不同形态不复用）。
+ * 身份入规格键——不同容器不复用、同容器不同形态不复用；#48：stateStore 注入
+ * 构建缝——生产为 PG 版，测试用内存替身）。
  */
 class AgentscopeHarnessAgentFactoryTest {
 
     private AgentscopeHarnessAgentFactory factoryWith(List<HarnessAgent> created) {
-        return new AgentscopeHarnessAgentFactory(
+        return factoryWith(created, new InMemoryAgentStateStore());
+    }
+
+    private AgentscopeHarnessAgentFactory factoryWith(List<HarnessAgent> created,
+                                                      AgentStateStore stateStore) {
+        return new AgentscopeHarnessAgentFactory(stateStore,
                 (name, sysPrompt, modelString, workspace) -> {
                     HarnessAgent agent = mock(HarnessAgent.class);
                     created.add(agent);
@@ -108,5 +117,21 @@ class AgentscopeHarnessAgentFactoryTest {
         factory.obtain("chat-agent", "sys", "deepseek:deepseek-v4-flash",
                 new ChatAgentWorkspace.Local(null));
         assertThat(created).hasSize(3);
+    }
+
+    @Test
+    void given_state_store_when_built_then_wired_into_agent() {
+        // 真构建路径（不走替身 builder）：#48 会话恢复的落点——agent 持有的是
+        // 注入的 store（生产为 PG 版），非框架缺省的本地 JSON 文件实现。
+        // builder().model() 即解析模型串（需 API key），无 key 环境跳过（冒烟同款口径）
+        assumeTrue(System.getenv("DEEPSEEK_API_KEY") != null,
+                "无 DEEPSEEK_API_KEY，跳过真构建断言");
+        AgentStateStore stateStore = new InMemoryAgentStateStore();
+        AgentscopeHarnessAgentFactory factory = new AgentscopeHarnessAgentFactory(stateStore);
+
+        HarnessAgent agent = factory.obtain("chat-agent-t", "sys",
+                "deepseek:deepseek-v4-flash", new ChatAgentWorkspace.Local(null));
+
+        assertThat(agent.getStateStore()).isSameAs(stateStore);
     }
 }

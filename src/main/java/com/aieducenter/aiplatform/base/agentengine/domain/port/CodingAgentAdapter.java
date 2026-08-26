@@ -14,9 +14,10 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 
 /**
  * 开发智能体适配层端口（CONTEXT.md「开发智能体适配层」）：抹平各引擎差异的薄
- * adapter，五方法——runTask / pendingQuestions / replyQuestions / replyPermission /
- * health。systemPrompt 与 modelId 是 {@link AgentTaskCommand} 入参，适配层不含
- * 任何角色概念。
+ * adapter——runTask / pendingQuestions / health 专属面，加上从 {@link WaitResponder}
+ * 继承的等待点答复面（engine / replyQuestions / replyPermission / abort，#48 抽出
+ * 窄面供非编码内核复用）。systemPrompt 与 modelId 是 {@link AgentTaskCommand} 入参，
+ * 适配层不含任何角色概念。
  *
  * <p>runTask 异步：立即返回 {@link RunResult}，干活过程（思考/输出/工具/补丁/
  * 完成）经 sink 回调；agent 可能中途向用户提问或请求权限——经 pendingQuestions /
@@ -33,10 +34,7 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
  * bean 名）。</p>
  */
 @Port(PortType.CLIENT)
-public interface CodingAgentAdapter {
-
-    /** 引擎名（注册键，与注册表 / 能力矩阵 / UsageEvent.engine 同值）。 */
-    String engine();
+public interface CodingAgentAdapter extends WaitResponder {
 
     /** 引擎显示名（能力矩阵行）。 */
     String label();
@@ -63,20 +61,6 @@ public interface CodingAgentAdapter {
      * 无问答能力的引擎恒空。
      */
     List<Map<String, Object>> pendingQuestions(WorkspaceHandle handle, String sessionId);
-
-    /** 回答问题：answers 按问题顺序，每项 = 该问题选中的标签列表（custom 输入也作为标签）。 */
-    void replyQuestions(WorkspaceHandle handle, String sessionId, String requestId,
-                        List<List<String>> answers);
-
-    /** 审批回复（人做决策：agent 请求权限时由用户批准/拒绝）。 */
-    void replyPermission(WorkspaceHandle handle, String sessionId, String permissionId,
-                         boolean approve);
-
-    /**
-     * 终止会话当前运行（deny cap 平台终止路径，A1 §1.3：同 run 内 permission deny
-     * 计数达阈值 → 平台主动终止，防审批循环）。无运行可终止返回 false。
-     */
-    boolean abort(WorkspaceHandle handle, String sessionId);
 
     /** 引擎是否就绪（opencode = serve 可达；dsh = CLI 可用）。 */
     boolean health(WorkspaceHandle handle);

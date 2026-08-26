@@ -72,7 +72,7 @@ class AgentWaitAppServiceTest {
     @BeforeEach
     void setUp() {
         appService = new AgentWaitAppService(waitRepository, sessionRepository,
-                new AgentEngineRegistry(List.of(adapter)), handleClient, 3,
+                new WaitResponderDirectory(List.of(adapter), List.of()), handleClient, 3,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
@@ -320,7 +320,8 @@ class AgentWaitAppServiceTest {
 
     private void assertDenyTerminates(long totalDenies, int cap, boolean expectAbort) {
         AgentWaitAppService service = new AgentWaitAppService(waitRepository,
-                sessionRepository, new AgentEngineRegistry(List.of(adapter)), handleClient,
+                sessionRepository,
+                new WaitResponderDirectory(List.of(adapter), List.of()), handleClient,
                 cap, Clock.fixed(NOW, ZoneOffset.UTC));
         AgentWait wait = raisedPermission();
         when(waitRepository.findById(wait.getWaitId())).thenReturn(Optional.of(wait));

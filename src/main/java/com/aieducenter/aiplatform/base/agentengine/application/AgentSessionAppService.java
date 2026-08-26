@@ -48,6 +48,26 @@ public class AgentSessionAppService {
                 .map(AgentSessionAppService::toResponse);
     }
 
+    /**
+     * 登记会话并回答「是否首见」（#48 对话智能体的 session-created 发射口径）：
+     * 已登记则刷新最近运行（ranOn）。跨上下文登记（非 runTask 建会话的内核，如
+     * chatagent）走本应用层口——引擎自述 engine 值（注册表键 / UsageEvent.engine 同值）。
+     */
+    @Transactional
+    public boolean recordIfAbsent(String workspaceId, String engine, String sessionId,
+                                  String runId) {
+        long numericWorkspaceId = workspaceHandleClient.handleOf(workspaceId)
+                .workspaceId().id();
+        AgentSession existing = sessionRepository.findBySessionId(sessionId).orElse(null);
+        boolean firstSeen = existing == null;
+        AgentSession session = firstSeen
+                ? AgentSession.open(numericWorkspaceId, engine, sessionId, runId)
+                : existing;
+        session.ranOn(runId);
+        sessionRepository.save(session);
+        return firstSeen;
+    }
+
     private static AgentSessionResponse toResponse(AgentSession session) {
         return new AgentSessionResponse(
                 session.getSessionId(),
