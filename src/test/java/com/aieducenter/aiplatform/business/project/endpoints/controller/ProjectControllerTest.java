@@ -342,6 +342,60 @@ class ProjectControllerTest {
     }
 
     @Test
+    void given_valid_name_when_rename_then_detail_returned() throws Exception {
+        // #43：动作端点风格同 archive；响应与详情端点同构（前端 invalidate 后刷新列表/顶栏）
+        when(appService.rename(100L, "品牌官网")).thenReturn(
+                new ProjectDetailResponse("100", "品牌官网", ProjectType.WEBSITE, "官网",
+                        "opencode", "900", "BA", "需求梳理",
+                        ProjectStatus.IN_PROGRESS, "开发中", 0, false,
+                        LocalDateTime.of(2026, 8, 22, 10, 0), List.of(), null));
+
+        performAsUser(post("/api/projects/100/rename")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"品牌官网\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.name").value("品牌官网"))
+                .andExpect(jsonPath("$.data.stage").value("BA"));
+        verify(appService).rename(100L, "品牌官网");
+    }
+
+    @Test
+    void given_oversized_name_when_rename_then_rejected_as_400() throws Exception {
+        // 长度上限 100 归命令层守门（与 #39 取名净化同限，DB 列长同源）
+        performAsUser(post("/api/projects/100/rename")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + "长".repeat(101) + "\"}"))
+                .andExpect(status().isBadRequest());
+        verify(appService, never()).rename(any(), any());
+    }
+
+    @Test
+    void given_blank_name_when_rename_then_prj_005_as_400() throws Exception {
+        // 空白拒绝在聚合（PRJ_005，与建项目同口径——DomainException 按 CodeMessage 映射 400）
+        when(appService.rename(eq(100L), argThat(" "::equals)))
+                .thenThrow(new DomainException(ProjectMessage.PROJECT_NAME_BLANK));
+
+        performAsUser(post("/api/projects/100/rename")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\" \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("项目名不能为空白"));
+    }
+
+    @Test
+    void given_unknown_project_when_rename_then_prj_001_mapped_to_404() throws Exception {
+        when(appService.rename(404L, "任意名"))
+                .thenThrow(new ApplicationException(ProjectMessage.PROJECT_NOT_FOUND));
+
+        performAsUser(post("/api/projects/404/rename")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"任意名\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("项目不存在"));
+    }
+
+    @Test
     void given_usage_when_get_then_aggregations_returned() throws Exception {
         TokenUsage tokens = new TokenUsage(100, 200, 30, 0, 0);
         when(queryAppService.usage(100L)).thenReturn(new ProjectUsageResponse("100", tokens,

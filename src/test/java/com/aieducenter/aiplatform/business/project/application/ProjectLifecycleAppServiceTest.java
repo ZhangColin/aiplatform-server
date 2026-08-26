@@ -264,6 +264,53 @@ class ProjectLifecycleAppServiceTest {
     }
 
     @Test
+    void given_project_when_rename_then_name_persisted_and_detail_returned() {
+        // #43 改名端点的用例面：名称后改（占位/生成名/已具名均可），详情同构返回
+        Long projectId = persistedProjectWithIteration("9410");
+
+        ProjectDetailResponse response = appService.rename(projectId, "品牌官网");
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT name FROM prj_projects WHERE id = ?", String.class, projectId))
+                .isEqualTo("品牌官网");
+        assertThat(response.name()).isEqualTo("品牌官网");
+        // 单账号 v1：改名不设状态限制、不发射 SSE（REST 响应即触达）
+        verify(notificationAppService, never()).publish(any(), any());
+    }
+
+    @Test
+    void given_archived_when_rename_then_succeeds() {
+        // 归档项目照样可改名（改名非生命周期动作，无单向终点语义）
+        Long projectId = persistedProjectWithIteration("9411");
+        appService.archive(projectId);
+
+        ProjectDetailResponse response = appService.rename(projectId, "归档后的名字");
+
+        assertThat(response.name()).isEqualTo("归档后的名字");
+        assertThat(response.archived()).isTrue();
+    }
+
+    @Test
+    void given_blank_name_when_rename_then_prj_005() {
+        // 空白拒绝在聚合（PRJ_005，与建项目同口径——长度上限归命令层校验）
+        Long projectId = persistedProjectWithIteration("9412");
+
+        assertThatThrownBy(() -> appService.rename(projectId, " "))
+                .isInstanceOf(CartisanException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NAME_BLANK.message());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT name FROM prj_projects WHERE id = ?", String.class, projectId))
+                .isEqualTo("删除对象"); // 拒绝后原名不动
+    }
+
+    @Test
+    void given_missing_project_when_rename_then_prj_001() {
+        assertThatThrownBy(() -> appService.rename(-1L, "任意名"))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
+    @Test
     void given_workspace_when_source_package_then_bytes_returned() {
         Long projectId = persistedProjectWithIteration("9500");
         byte[] tarball = {0x1f, (byte) 0x8b, 0x08};

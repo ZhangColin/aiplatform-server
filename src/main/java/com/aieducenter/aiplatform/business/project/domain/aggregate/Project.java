@@ -39,11 +39,17 @@ public class Project extends Auditable implements AggregateRoot<Project, Long> {
      */
     public static final String PLACEHOLDER_NAME = "未命名项目";
 
+    /**
+     * 名称长度上限（#43 收口单一事实源）：建/改名单一守门口径——命令层 @Size、
+     * 取名净化（#39）与本列长共用（超限弃用/拒绝，不截断）。
+     */
+    public static final int NAME_MAX_LENGTH = 100;
+
     @Id
     @Column(name = "id", nullable = false, updatable = false)
     private Long id;
 
-    @Column(name = "name", nullable = false, length = 100)
+    @Column(name = "name", nullable = false, length = NAME_MAX_LENGTH)
     private String name;
 
     @Column(name = "type", nullable = false, updatable = false)

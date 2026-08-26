@@ -53,9 +53,6 @@ public class ProjectNamingAppService implements DisposableBean {
             "你是软件项目的命名助手。用户会给出一段项目需求描述，请据此为项目起一个简洁、贴切、易读的中文项目名。"
                     + "规则：名字 4-12 个字；直接输出名字本身，不要解释、不要引号、不要结尾标点；不调用任何工具。";
 
-    /** 名称 DB 上限（prj_projects.name length=100）：超限弃用不截断（红线同源）。 */
-    private static final int NAME_MAX_LENGTH = 100;
-
     /** 净化时剥的包裹字符（成对引号/加粗星号/结尾标点——模型偶发包裹，结构性清理）。 */
     private static final String WRAPPERS = "「」『』“”‘’\"'`*。．.！!？?~～";
 
@@ -171,8 +168,8 @@ public class ProjectNamingAppService implements DisposableBean {
             start++;
         }
         line = line.substring(start, end).trim();
-        if (line.isEmpty() || line.length() > NAME_MAX_LENGTH) {
-            return null;
+        if (line.isEmpty() || line.length() > Project.NAME_MAX_LENGTH) {
+            return null; // 超限弃用不截断（红线同源；上限单一事实源在聚合）
         }
         return line;
     }

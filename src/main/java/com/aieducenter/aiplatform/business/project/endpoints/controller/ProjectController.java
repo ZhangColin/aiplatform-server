@@ -30,6 +30,7 @@ import com.aieducenter.aiplatform.business.project.application.ProjectLifecycleA
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.AddDemandEntryCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
+import com.aieducenter.aiplatform.business.project.application.dto.command.RenameProjectCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.command.StageRejectCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.DemandPoolEntryResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.PrdResponse;
@@ -44,13 +45,13 @@ import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 /**
  * 项目主链 REST 面（demo ProjectController 的重写，B0 §2 片5）：对话建项目
  * （引擎取后台全局配置，建即自动跑 BA）→ 下任务 / 答复等待点（ProjectAgentController）→
- * 门操作与收口（approve/reject，A3 §3/§5）→ 需求池 / 归档 / 详情 / 用量 /
+ * 门操作与收口（approve/reject，A3 §3/§5）→ 需求池 / 归档 / 改名（#43）/ 详情 / 用量 /
  * PRD 读（#41）→ 源码包下载（片5c 项目周边，票 #24）→ 预览 → 删除真删级联。
  */
 @RestController
 @RequestMapping("/api/projects")
 @Validated
-@Tag(name = "Projects", description = "项目主链：建项目 / 列表 / 详情 / 门操作 / 需求池 / 归档 / 用量 / PRD / 源码包 / 预览 / 删除")
+@Tag(name = "Projects", description = "项目主链：建项目 / 列表 / 详情 / 门操作 / 需求池 / 归档 / 改名 / 用量 / PRD / 源码包 / 预览 / 删除")
 public class ProjectController {
 
     private final ProjectLifecycleAppService appService;
@@ -162,6 +163,17 @@ public class ProjectController {
                     + "重复归档 409 PRJ_013。归档不迁移期、不清工作区（工具项目级常开）")
     public ApiResponse<ProjectDetailResponse> archive(@PathVariable String id) {
         return ApiResponse.ok(appService.archive(parseId(id)));
+    }
+
+    @PostMapping("/{id}/rename")
+    @Operation(summary = "改名（需求端右栏「项目信息」inline 改名）",
+            description = "#43：名称后改的显式动作（占位名/生成名/已具名均可改，含已归档项目）。"
+                    + "响应与详情端点同构——前端改名成功后 invalidate projects 域刷新列表/顶栏。"
+                    + "空白拒绝 400 PRJ_005（与建项目同口径），长度上限 100 超限 400；"
+                    + "单账号场景不设越权面、不发射 SSE（REST 响应即触达）")
+    public ApiResponse<ProjectDetailResponse> rename(@PathVariable String id,
+                                                     @Valid @RequestBody RenameProjectCommand command) {
+        return ApiResponse.ok(appService.rename(parseId(id), command.name()));
     }
 
     @GetMapping("/{id}/usage")

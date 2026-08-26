@@ -154,6 +154,20 @@ public class ProjectLifecycleAppService {
     }
 
     /**
+     * 改名（#43 需求端右栏 inline 改名）：非生命周期动作——不设状态限制（归档项目
+     * 照改），不发射 SSE（单账号场景，REST 响应即触达，前端 invalidate projects 域）。
+     * 空白拒绝在聚合（PRJ_005 与建项目同口径）；长度上限归命令层（100）。
+     *
+     * @throws ApplicationException PRJ_001 项目不存在；PRJ_005 名空白（400，聚合抛出）
+     */
+    public ProjectDetailResponse rename(Long projectId, String name) {
+        Project project = requireProject(projectId);
+        project.rename(name); // 取名落位（#39）与用户改名（#43）共用同一行为
+        projectRepository.save(project);
+        return queryAppService.detail(projectId);
+    }
+
+    /**
      * 源码包（A3 §2.2 交付物 = 源码包 + 仓内文档，端点常开）：打包项目 dev 工作区
      * 为 tar.gz 字节流（排除 .env 机密与 node_modules）；文件名/HTTP 头归 REST 层。
      *
