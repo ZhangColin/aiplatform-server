@@ -49,6 +49,7 @@ import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -233,7 +234,7 @@ class ProjectControllerTest {
 
     @Test
     void given_reason_when_reject_then_passed_through() throws Exception {
-        when(gateAppService.reject(eq(100L), argThat("布局不对"::equals)))
+        when(gateAppService.reject(eq(100L), argThat("布局不对"::equals), eq(false)))
                 .thenReturn(detailOf("100", ProjectStatus.IN_PROGRESS,
                         "BA", 1, false));
 
@@ -245,12 +246,28 @@ class ProjectControllerTest {
     }
 
     @Test
+    void given_requirement_change_flag_when_reject_then_flag_passed_through() throws Exception {
+        // #46：requirementChange 缺省 false（缺字段即 false）；显式 true 原样透传——
+        // G2 表单的「涉及需求变更」标记是 BA 联动的唯一开关
+        performAsUser(post("/api/projects/100/stage/reject")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"布局不对\"}"))
+                .andExpect(status().isOk());
+        performAsUser(post("/api/projects/100/stage/reject")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"布局不对\",\"requirementChange\":true}"))
+                .andExpect(status().isOk());
+        verify(gateAppService).reject(eq(100L), argThat("布局不对"::equals), eq(false));
+        verify(gateAppService).reject(eq(100L), argThat("布局不对"::equals), eq(true));
+    }
+
+    @Test
     void given_blank_reason_when_reject_then_rejected_as_400() throws Exception {
         performAsUser(post("/api/projects/100/stage/reject")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\" \"}"))
                 .andExpect(status().isBadRequest());
-        verify(gateAppService, never()).reject(any(), any());
+        verify(gateAppService, never()).reject(any(), any(), anyBoolean());
     }
 
     @Test

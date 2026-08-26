@@ -121,13 +121,19 @@ public class ProjectController {
     }
 
     @PostMapping("/{id}/stage/reject")
-    @Operation(summary = "门驳回（一律停留当前阶段）",
+    @Operation(summary = "门驳回（一律停留当前阶段；G1/G2 驳回自动回流）",
             description = "reason 必填（驳回反馈是前端展示与纪要来源）。驳回不迁移阶段——"
                     + "验收驳回停留验收段，开发平台照常下修复任务，用户再验收（A3 §3）；"
-                    + "留痕落 prj_confirmations（decision=驳回）。SSE：stage-changed(rejected=true, reason)")
+                    + "留痕落 prj_confirmations（decision=驳回）。驳回回流（#50/#46）：需求确认（G1）"
+                    + "驳回自动回流 BA 续访谈；Demo 确认（G2）驳回自动起 DEMO 修正 run（意见注入"
+                    + "续 Demo 会话，预览后用户再确认）。requirementChange=true（G2 表单显式标记，"
+                    + "缺省 false）时意见同时回流 BA 修订 PRD（document-updated 可观测，"
+                    + "Demo 修正以新 PRD 为准）；不带标记不触发任何 BA 活动。"
+                    + "SSE：stage-changed(rejected=true, reason)")
     public ApiResponse<ProjectDetailResponse> reject(@PathVariable String id,
                                                      @Valid @RequestBody StageRejectCommand command) {
-        return ApiResponse.ok(gateAppService.reject(parseId(id), command.reason()));
+        return ApiResponse.ok(gateAppService.reject(parseId(id), command.reason(),
+                command.requirementChange()));
     }
 
     @PostMapping("/{id}/demand-pool")

@@ -15,9 +15,11 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import com.cartisan.core.exception.ApplicationException;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentRunContext;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentSessionAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentSessionResponse;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
@@ -82,6 +84,10 @@ class ProjectAgentTaskAppServiceTest {
     /** BA 访谈编排 mock（#40 双轨分野：BA 角色路由目标；真实编排见 BaInterviewAppServiceTest）。 */
     @MockitoBean
     private BaInterviewAppService baInterviewAppService;
+
+    /** 会话查询 mock（#46 Demo 会话寻址——修正 run 续会话的解析口）。 */
+    @MockitoBean
+    private AgentSessionAppService agentSessionAppService;
 
     @AfterEach
     void tearDown() {
@@ -289,6 +295,73 @@ class ProjectAgentTaskAppServiceTest {
         assertThat(openIteration(project).getStage()).isEqualTo(ProjectMainChain.STAGE_DEV);
         assertThat(openIteration(project).getStageTaskCount()).isZero();
         verify(notificationAppService, never()).publish(anyString(), any());
+    }
+
+    // ---------- #46 G2 驳回回流：Demo 修正 run 续 Demo 会话（sessionId 复用） ----------
+
+    @Test
+    void given_workspace_engine_session_when_dispatch_demo_correction_then_continue_demo_session() {
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEMO);
+        when(agentSessionAppService.listByWorkspace(Long.toString(project.getWorkspaceId())))
+                .thenReturn(List.of(sessionOf("ses-demo", "opencode")));
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-c1", "ses-demo", "opencode", true));
+
+        ProjectAgentTaskResponse response = appService.dispatchDemoCorrectionRun(project.getId(),
+                "按驳回意见修正首页");
+
+        // 续 Demo 会话而非新会话：sessionId 复用（DEMO 段引擎会话的常态唯一来源——
+        // 自动 Demo run 与历次修正 run）
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), any());
+        assertThat(command.getValue().sessionId()).isEqualTo("ses-demo");
+        assertThat(command.getValue().systemPrompt()).isEqualTo(RolePreset.DEMO.systemPrompt());
+        assertThat(command.getValue().engine()).isEqualTo("opencode");
+        assertThat(response.role()).isEqualTo(RolePreset.DEMO);
+        assertThat(response.sessionId()).isEqualTo("ses-demo");
+        // 阶段计数照记（G2 门重新就绪的计数输入，#46 往复至通过）
+        assertThat(openIteration(project).getStageTaskCount()).isEqualTo(1);
+    }
+
+    @Test
+    void given_engine_mismatch_session_when_dispatch_demo_correction_then_fresh_session() {
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEMO);
+        // 他引擎会话在前（残留/手起）——引擎不符不续，新起会话兜底
+        when(agentSessionAppService.listByWorkspace(Long.toString(project.getWorkspaceId())))
+                .thenReturn(List.of(sessionOf("ses-dsh", "dsh")));
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-c2", "ses-new", "opencode", true));
+
+        appService.dispatchDemoCorrectionRun(project.getId(), "按驳回意见修正首页");
+
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), any());
+        assertThat(command.getValue().sessionId()).isNull();
+        assertThat(openIteration(project).getStageTaskCount()).isEqualTo(1);
+    }
+
+    @Test
+    void given_no_session_when_dispatch_demo_correction_then_fresh_session() {
+        // 无任何会话（异常路径：Demo run 未登记/已清理）同新起——回流不因缺会话失败
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEMO);
+        when(agentSessionAppService.listByWorkspace(Long.toString(project.getWorkspaceId())))
+                .thenReturn(List.of());
+        when(agentTaskAppService.dispatch(anyString(), any(), any()))
+                .thenReturn(new AgentTaskResponse("run-c3", "ses-new", "opencode", true));
+
+        ProjectAgentTaskResponse response = appService.dispatchDemoCorrectionRun(project.getId(),
+                "按驳回意见修正首页");
+
+        ArgumentCaptor<AgentTaskDispatchCommand> command =
+                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), any());
+        assertThat(command.getValue().sessionId()).isNull();
+        assertThat(response.accepted()).isTrue();
     }
 
     // ---------- A4 §5 期联动：人测试任务的 advance 守卫（票 #26） ----------
@@ -505,6 +578,11 @@ class ProjectAgentTaskAppServiceTest {
     private Project persistedProject(String engine) {
         return projectRepository.save(Project.create("测试项目", ProjectType.WEBSITE, engine,
                 9001L + System.nanoTime() % 1000, null));
+    }
+
+    /** 引擎会话响应（#46 Demo 会话寻址的查询面形状；workspaceId/lastRunId 不参与分流）。 */
+    private static AgentSessionResponse sessionOf(String sessionId, String engine) {
+        return new AgentSessionResponse(sessionId, "w", engine, "run-old", null);
     }
 
     private Iteration persistedIteration(Project project, String stage) {

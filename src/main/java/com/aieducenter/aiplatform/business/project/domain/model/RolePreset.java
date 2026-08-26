@@ -83,6 +83,35 @@ public enum RolePreset implements BaseEnum<RolePreset> {
                 + "保存后向用户简短说明本次修订要点。";
     }
 
+    /**
+     * G2（Demo 确认）驳回后 DEMO 修正 run 的回流提示（#46 驳回回流闭环，G1 通过
+     * 自动 Demo 的驳回镜像）：意见注入 prompt 续 Demo 会话——按意见修正原型，修正
+     * 完向用户说明改动再确认，往复至通过。带需求变更标记时 BA 同轮在修订 PRD——
+     * 提示重读最新 PRD 对齐（读到旧版先按意见修正，PRD 更新后下一轮完全对齐）。
+     */
+    public static String demoCorrectionPrompt(String reason, boolean requirementChange) {
+        String prompt = "用户驳回了当前 Demo 原型，驳回意见：" + reason + "\n"
+                + "请按意见修正 /workspace 下的 Demo 原型（默认 /workspace/index.html），"
+                + "保持可预览、可体验，修正完成后向用户简要说明改动点，让用户再确认。";
+        return requirementChange
+                ? prompt + "\n注意：该意见同时已流转需求分析师（BA）修订 PRD"
+                        + "（/workspace/docs/PRD.md）——请重读最新版 PRD 并对齐修正；"
+                        + "若读到的仍是旧版，先按意见修正呈现，PRD 更新后的下一轮确认再完全对齐。"
+                : prompt;
+    }
+
+    /**
+     * G2（Demo 确认）驳回且带「涉及需求变更」标记时 BA 续轮的回流提示（#46 可选
+     * 联动 PRD 更新，#50 回流机制的复用面）：意见经 Demo 驳回回流 BA——评估对需求
+     * 的影响，必要时澄清，修订后再次 savePrd（PRD 更新后 Demo 修正以新 PRD 为准）。
+     */
+    public static String demoRejectRequirementChangePrompt(String reason) {
+        return "用户驳回了当前 Demo 原型，并标记驳回意见涉及需求变更。意见：" + reason + "\n"
+                + "请评估该意见对需求的影响：需要澄清就先用 ask_user 向用户澄清（一次只问一个）；"
+                + "否则按意见修订需求并再次调用 savePrd 保存修订后的完整 PRD 全文（覆盖旧版），"
+                + "保存后向用户简短说明本次修订要点。";
+    }
+
     private final Integer code;
     private final String name;
     private final String modelId;

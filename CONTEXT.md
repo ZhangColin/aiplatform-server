@@ -61,7 +61,7 @@ BA 等对话型角色的运行形态：平台进程内的 AgentScope HarnessAgen
 **等待点双向桥（Wait Bridge）**：对话智能体挂起（权限确认/向用户提问）与平台等待点的双向通道——挂起 → `wait-raised` 落既有等待点（settle 即续跑），settle 三型答复 → ConfirmResult 重建续跑；deny cap / run 终态联动等平台守卫同口径生效（#48）。
 **会话恢复（Session Recovery）**：对话智能体的 AgentState 落 PostgreSQL（(userId, sessionId) 槽位）+ 会话行表判定——平台重启后按会话标识恢复续跑，访谈上下文不丢（#48）。
 **BA 会话绑定（BA Session Binding）**：projectId → BA 会话的无表派生（sessionId=`ba-{projectId}`，userId=项目 owner）——建项目即访谈、答卡 settle 续跑、对话自由补充都续这一条会话，上下文不劈叉（#40）。自由补充遇在悬问答时输入即答复（settle 化解，锚回原 run 不开新轮）。
-**驳回回流（Reject Reflow）**：G1（需求确认）驳回后的自动回流闭环——驳回留痕落定后门操作内自动起 BA 续轮（意见注入 prompt 续 BA 会话），BA 按意见澄清追问或修订 PRD（savePrd 再执行），用户再确认，往复至通过；续轮起跑失败不阻断驳回留痕（#50）。
+**驳回回流（Reject Reflow）**：门驳回后的自动回流闭环，两扇门两形态——G1（需求确认）驳回落留痕后门操作内自动起 BA 续轮（意见注入 prompt 续 BA 会话），BA 按意见澄清追问或修订 PRD（savePrd 再执行），用户再确认，往复至通过（#50）；G2（Demo 确认）驳回落留痕后自动起 DEMO 修正 run（意见注入 prompt 续 Demo 会话——工作区最近一次本项目引擎会话），修正完门重新就绪，往复至通过（#46）。G2 驳回带显式「涉及需求变更」标记（requirementChange，v1 不做语义自动判定）时意见同时回流 BA 修订 PRD（document-updated 可观测，修正以新 PRD 为准）；不带标记不惊动 BA。起跑失败不阻断驳回留痕（两路独立护栏）。
 _Avoid_: 与开发智能体/编码引擎概念混用（两类运行时、两套适配，不共享会话与引擎配置）；对话智能体的「会话」与编码引擎会话（agt_agent_sessions）混用（会话恢复归 #48 另接线）
 
 **中间件资源（Middleware Resource）**：

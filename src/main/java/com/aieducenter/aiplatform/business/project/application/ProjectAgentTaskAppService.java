@@ -8,9 +8,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.cartisan.core.exception.ApplicationException;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentRunContext;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentSessionAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentSessionResponse;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
@@ -69,6 +71,7 @@ public class ProjectAgentTaskAppService {
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
     private final AgentTaskAppService agentTaskAppService;
+    private final AgentSessionAppService agentSessionAppService;
     private final AgentStreamAppService streamAppService;
     private final PlatformNotificationAppService notificationAppService;
     private final ProjectKnowledgeAppService knowledgeAppService;
@@ -78,6 +81,7 @@ public class ProjectAgentTaskAppService {
     public ProjectAgentTaskAppService(ProjectRepository projectRepository,
                                       IterationRepository iterationRepository,
                                       AgentTaskAppService agentTaskAppService,
+                                      AgentSessionAppService agentSessionAppService,
                                       AgentStreamAppService streamAppService,
                                       PlatformNotificationAppService notificationAppService,
                                       ProjectKnowledgeAppService knowledgeAppService,
@@ -86,6 +90,7 @@ public class ProjectAgentTaskAppService {
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
         this.agentTaskAppService = agentTaskAppService;
+        this.agentSessionAppService = agentSessionAppService;
         this.streamAppService = streamAppService;
         this.notificationAppService = notificationAppService;
         this.knowledgeAppService = knowledgeAppService;
@@ -102,6 +107,15 @@ public class ProjectAgentTaskAppService {
      * 引擎零交互；其余角色（DEV/TEST/DEMO/ARCH/DELIVERY）照旧走编码引擎。</p>
      */
     public ProjectAgentTaskResponse dispatchTask(Long projectId, ProjectAgentTaskCommand command) {
+        return dispatchTask(projectId, command, null);
+    }
+
+    /**
+     * 下发项目任务（会话续跑缝，#46）：sessionId 非空 = 复用既有引擎会话续跑
+     * （Demo 修正 run 续 Demo 会话），编排/计量/计数与两参形态一致。
+     */
+    private ProjectAgentTaskResponse dispatchTask(Long projectId, ProjectAgentTaskCommand command,
+                                                  String sessionId) {
         Project project = requireProject(projectId);
         Iteration openIteration = iterationRepository
                 .findByProjectIdAndStatus(projectId, IterationStatus.OPEN)
@@ -123,7 +137,7 @@ public class ProjectAgentTaskAppService {
         AgentTaskResponse result = agentTaskAppService.dispatch(
                 Long.toString(project.getWorkspaceId()),
                 new AgentTaskDispatchCommand(prompt, role.systemPrompt(),
-                        role.modelId(), project.getEngine(), null),
+                        role.modelId(), project.getEngine(), sessionId),
                 new AgentRunContext(runId,
                         new UsageContext(Long.toString(projectId),
                                 usageDims(role.name(), stage, openIteration)),
@@ -150,6 +164,36 @@ public class ProjectAgentTaskAppService {
         // stage 为下发时快照（首个测试任务的任务本身发起于开发段，计数已落测试段）
         return new ProjectAgentTaskResponse(result.runId(), result.sessionId(),
                 result.engine(), role, role.getName(), stage, result.accepted());
+    }
+
+    /**
+     * Demo 修正 run 下发（#46 G2 驳回回流——G1 通过自动 Demo 的驳回镜像）：prompt =
+     * 驳回意见 + 修正指令（{@link RolePreset#demoCorrectionPrompt}，门操作组装），
+     * 续项目工作区最近一次引擎会话（Demo 会话）而非新起——修正建立在已建原型的
+     * 上下文上。无会话（Demo run 未登记/已清理）或引擎不符时新起兜底。SSE 帧序/
+     * 计量/知识注入/阶段计数全继承 {@link #dispatchTask}（计数照记——G2 门重新
+     * 就绪的输入，往复至通过）。
+     */
+    public ProjectAgentTaskResponse dispatchDemoCorrectionRun(Long projectId, String prompt) {
+        Project project = requireProject(projectId);
+        return dispatchTask(projectId,
+                new ProjectAgentTaskCommand(prompt, RolePreset.DEMO),
+                latestEngineSessionOf(project));
+    }
+
+    /**
+     * Demo 会话寻址（#46）：工作区最近一次<b>本项目引擎</b>的会话（新起在前取首）。
+     * DEMO 段引擎会话的常态唯一来源是自动 Demo run 与历次修正 run；同期手动他角色
+     * 任务属边缘——引擎过滤兜住跨引擎误续（同引擎误续仍在同工作区上下文内，无害）。
+     * 无可续会话返回 null（引擎新起）。
+     */
+    private String latestEngineSessionOf(Project project) {
+        return agentSessionAppService
+                .listByWorkspace(Long.toString(project.getWorkspaceId())).stream()
+                .filter(session -> project.getEngine().equals(session.engine()))
+                .map(AgentSessionResponse::sessionId)
+                .findFirst()
+                .orElse(null);
     }
 
     /**

@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -50,17 +51,21 @@ import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepo
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * #40 BA 访谈循环真模型冒烟（#49 补 PRD 产出链，#50 补驳回回流收口；DEEPSEEK_API_KEY
- * 未设或 docker daemon 不在整类跳过）：编排全真链（真模型 + 真 dev 容器 + 真 PG
+ * #40 BA 访谈循环真模型冒烟（#49 补 PRD 产出链，#50 补 G1 驳回回流收口，#46 补
+ * G2 驳回回流——Demo 意见修正 run + 可选联动 BA 修订 PRD；DEEPSEEK_API_KEY 未设
+ * 或 docker daemon 不在整类跳过）：编排全真链（真模型 + 真 dev 容器 + 真 PG
  * 落库/settle 续跑），仅 SSE 发射边（无订阅者的广播口）与工作区句柄解析两处 mock
- * 收口观测（另：G1 通过的自动 Demo 引擎下发 mock 收口——真模型链不进编码引擎）。
+ * 收口观测（另：引擎侧任务下发——G1 自动 Demo 与 #46 修正 run——mock 收口，
+ * 真模型链不进编码引擎）。
  *
  * <p>验收口径：一句话开场 → 至少两轮实质提问（QUESTION 载荷带前端问答卡形状，
  * 经 PG JSON 落库往返）→ 答卡 settle 续跑 → 催促收敛（自由补充通道，BA 停止提问）
  * → savePrd 产出 PRD（工作区文件 + 状态位 + document-updated + G1 门就绪翻真，
  * 修订再执行三更新）→ 同会话上下文延续；#50 驳回回流：G1 驳回 → 门操作内自动起
  * BA 续轮（意见注入）→ PRD 修订（savePrd 再执行）→ 门重新就绪 → 再确认通过推进
- * DEMO；计量落 UsageEvent（engine=agentscope，dims.role=BA）。</p>
+ * DEMO；#46 G2 驳回回流：Demo 驳回（带需求变更标记）→ 修正 run 自动发起（意见进
+ * prompt，mock 收口）+ BA 真回流修订 PRD（savePrd 再执行）→ G2 门重新就绪 →
+ * 再确认通过推进 DEV；计量落 UsageEvent（engine=agentscope，dims.role=BA）。</p>
  */
 @SpringBootTest
 class BaInterviewSmokeTest {
@@ -253,7 +258,7 @@ class BaInterviewSmokeTest {
         frames.forEach(f -> knownRuns.add(f.runId()));
         gateAppService.reject(projectId,
                 "需求有调整：去掉刚新增的博客板块，只保留中英双语官网本体，"
-                        + "并补充关键约束——页面需适配移动端浏览");
+                        + "并补充关键约束——页面需适配移动端浏览", false);
         // 驳回留痕/SSE 口径零回归：stage-changed(rejected + reason) 照发、停留 BA 段
         assertThat(notifies.stream()
                 .anyMatch(n -> ProjectEventTypes.STAGE_CHANGED.equals(n.type())
@@ -291,6 +296,52 @@ class BaInterviewSmokeTest {
                         + " ON c.iteration_id = i.id WHERE i.project_id = ?",
                 Integer.class, projectId);
         assertThat(decisions).as("驳回与通过两笔留痕").isEqualTo(2);
+
+        // 8) #46 G2 驳回回流（带「涉及需求变更」标记）：Demo 驳回 → 修正 run 自动
+        // 发起（意见进 prompt——引擎侧 mock 收口）+ BA 真回流续轮（意见进 BA 上下文
+        // 触发 PRD 修订）→ savePrd 再执行（document-updated 可观测）→ G2 门重新就绪
+        LocalDateTime thirdBit = prdBitOf(projectId);
+        Set<String> runsBeforeG2 = new HashSet<>();
+        frames.forEach(f -> runsBeforeG2.add(f.runId()));
+        gateAppService.reject(projectId,
+                "首页按新定位重做：目标用户聚焦开发者受众，去掉面向大众的营销板块，"
+                        + "突出快速上手与文档入口——涉及需求层面的目标用户调整", true);
+        // 驳回留痕/SSE 口径零回归：停留 DEMO 段
+        assertThat(queryAppService.detail(projectId).stage())
+                .isEqualTo(ProjectMainChain.STAGE_DEMO);
+        // DEMO 修正 run：意见可追溯进 prompt（真模型链不进编码引擎——mock 收口）
+        ArgumentCaptor<String> correction = ArgumentCaptor.forClass(String.class);
+        verify(agentTaskAppService).dispatchDemoCorrectionRun(eq(projectId),
+                correction.capture());
+        assertThat(correction.getValue()).contains("目标用户聚焦开发者受众");
+        // BA 回流续轮（真模型）：无在悬问答 → 开新轮（role-assigned 新 runId 同步发射）
+        String baReflowRun = frames.stream()
+                .filter(f -> AgentEventTypes.ROLE_ASSIGNED.equals(f.type())
+                        && !runsBeforeG2.contains(f.runId()))
+                .map(Frame::runId).findFirst().orElseThrow();
+        List<String> g2Seen = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            String next = awaitResumeOutcome(Set.of(baReflowRun), g2Seen);
+            if ("finished".equals(next)) {
+                break;
+            }
+            g2Seen.add(next);
+            settle(next, "没有需要澄清的：按驳回意见修订 PRD 并重新保存，不要再提问");
+        }
+        awaitPrdProduced(4);
+        assertThat(prdBitOf(projectId)).isAfterOrEqualTo(thirdBit);
+        assertThat(queryAppService.prd(projectId).content()).contains("开发者");
+        assertThat(queryAppService.detail(projectId).gate().ready())
+                .as("BA 修订 PRD 后 G2 门重新就绪").isTrue();
+
+        // 9) G2 再确认通过 → 推进开发段（需求方侧段落收口，G2 通过现状保持）
+        ProjectDetailResponse demoApproved = gateAppService.approve(projectId);
+        assertThat(demoApproved.stage()).isEqualTo(ProjectMainChain.STAGE_DEV);
+        Integer allDecisions = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM prj_confirmations c JOIN prj_iterations i"
+                        + " ON c.iteration_id = i.id WHERE i.project_id = ?",
+                Integer.class, projectId);
+        assertThat(allDecisions).as("G1/G2 各驳回+通过四笔留痕").isEqualTo(4);
     }
 
     /** 有界等待 document-updated 触达 ≥ n 次（#49：savePrd 每次执行必发；工具在

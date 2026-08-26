@@ -44,7 +44,9 @@ import lombok.extern.slf4j.Slf4j;
  * ADR-0001）；自动 Demo 起跑失败不回滚门决策（阶段已推进，失败经日志表达）。
  * G1 驳回触发 BA 续轮回流（#50）：驳回留痕落定后门操作内自动起 BA 续轮（意见
  * 注入 prompt 续 BA 会话——澄清追问或直接修订 PRD 再 savePrd，门重新就绪，
- * 往复至通过）；起跑失败不阻断驳回留痕（照「BA 起跑失败不回滚建项目」口径）。</p>
+ * 往复至通过）；起跑失败不阻断驳回留痕（照「BA 起跑失败不回滚建项目」口径）。
+ * G2 驳回触发 DEMO 修正回流（#46，同构镜像）：意见注入 prompt 续 Demo 会话起
+ * 修正 run；带「涉及需求变更」标记时意见同时回流 BA 修订 PRD（#50 机制复用）。</p>
  */
 @Service
 @Slf4j
@@ -159,11 +161,15 @@ public class ProjectGateAppService {
      * 门驳回（reason 必填）：一律停留当前阶段（A3 §3——无「退回哪段」的问题），
      * 留痕落 {@code prj_confirmations}，SSE stage-changed(rejected + reason)。
      * G1（BA 段）驳回落留痕后自动起 BA 续轮（#50 驳回回流；起跑失败不阻断留痕）。
+     * G2（Demo 段）驳回落留痕后自动起 DEMO 修正 run（#46——意见注入 prompt 续
+     * Demo 会话，修正完门重新就绪）；{@code requirementChange} 置位时意见同时回流
+     * BA（复用 #50 机制触发 PRD 修订——PRD 更新后修正以新 PRD 为准；v1 只认显式
+     * 标记不做语义自动判定）。两路起跑失败互不牵连、不阻断驳回留痕。
      *
      * @throws ApplicationException PRJ_001 项目不存在；PRJ_011 reason 空白；
      *                              PRJ_009 当前阶段无确认门；PRJ_010 无 OPEN 期
      */
-    public ProjectDetailResponse reject(Long projectId, String reason) {
+    public ProjectDetailResponse reject(Long projectId, String reason, boolean requirementChange) {
         requireProject(projectId);
         Iteration iteration = openIterationOf(projectId);
         StageEntry current = stageOf(iteration.getStage());
@@ -189,11 +195,24 @@ public class ProjectGateAppService {
         // 往复至通过）。起跑失败不阻断驳回留痕（失败经日志表达——意见仍可经自由
         // 补充通道手动进 BA 会话）。
         if (ProjectMainChain.STAGE_BA.equals(current.name())) {
-            try {
-                baInterviewAppService.runInterviewTurn(projectId,
-                        RolePreset.rejectReflowPrompt(strippedReason));
-            } catch (RuntimeException e) {
-                log.warn("项目 {} 驳回后 BA 续轮起跑失败（驳回留痕不受影响）", projectId, e);
+            reflowQuietly(projectId, "BA 续轮",
+                    () -> baInterviewAppService.runInterviewTurn(projectId,
+                            RolePreset.rejectReflowPrompt(strippedReason)));
+        }
+
+        // #46 驳回回流：G2（Demo 确认）驳回 → 自动起 DEMO 修正 run（意见注入 prompt
+        // 续 Demo 会话：修正完门重新就绪，往复至通过）；带「涉及需求变更」标记时意见
+        // 同时回流 BA（触发 PRD 修订，document-updated 可观测——修正 run 提示重读
+        // 最新 PRD 对齐，更新落地前的偏差由循环下一轮收敛）。两路独立护栏：任一起跑
+        // 失败只经日志表达，不阻断驳回留痕也不吞另一路。
+        if (ProjectMainChain.STAGE_DEMO.equals(current.name())) {
+            reflowQuietly(projectId, "Demo 修正",
+                    () -> agentTaskAppService.dispatchDemoCorrectionRun(projectId,
+                            RolePreset.demoCorrectionPrompt(strippedReason, requirementChange)));
+            if (requirementChange) {
+                reflowQuietly(projectId, "BA 回流",
+                        () -> baInterviewAppService.runInterviewTurn(projectId,
+                                RolePreset.demoRejectRequirementChangePrompt(strippedReason)));
             }
         }
         return queryAppService.detail(projectId);
@@ -231,5 +250,17 @@ public class ProjectGateAppService {
     private ConfirmationKind confirmationKindOf(StageEntry stage) {
         return ProjectMainChain.confirmationKindOf(stage.name())
                 .orElseThrow(() -> new ApplicationException(ProjectMessage.PROJECT_FIELDS_INCOMPLETE));
+    }
+
+    /**
+     * 驳回回流起跑护栏（#50/#46 共用）：起跑失败不阻断驳回留痕、多路回流互不牵连
+     * （失败经日志表达——意见仍可经自由补充通道/手动下任务进会话）。
+     */
+    private void reflowQuietly(Long projectId, String reflow, Runnable start) {
+        try {
+            start.run();
+        } catch (RuntimeException e) {
+            log.warn("项目 {} 驳回后 {}起跑失败（驳回留痕不受影响）", projectId, reflow, e);
+        }
     }
 }

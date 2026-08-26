@@ -289,7 +289,7 @@ class ProjectGateAppServiceTest {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_ACCEPTANCE, 0);
 
         ProjectDetailResponse response = asUser(7L, () ->
-                appService.reject(projectId, " 首页布局与 PRD 不符 "));
+                appService.reject(projectId, " 首页布局与 PRD 不符 ", false));
 
         // 驳回一律停留当前阶段（验收驳回停留验收段，A3 §3）
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_ACCEPTANCE);
@@ -315,8 +315,8 @@ class ProjectGateAppServiceTest {
                 .containsEntry("reason", "首页布局与 PRD 不符")
                 .doesNotContainKey("approved");
 
-        // 非 BA 段驳回无回流（#50 回流只挂 G1——BA 会话续轮是需求梳理段的事）
-        verifyNoInteractions(baInterviewAppService);
+        // 验收段驳回零回流（#50/#46 回流只挂 G1/G2——BA/DEMO 段的编排动作）
+        verifyNoInteractions(baInterviewAppService, agentTaskAppService);
     }
 
     // ---------- #50 驳回回流：G1 驳回 → BA 续轮自动发起 ----------
@@ -326,7 +326,7 @@ class ProjectGateAppServiceTest {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
 
         ProjectDetailResponse response = asUser(7L, () ->
-                appService.reject(projectId, " 范围太大，先做 MVP "));
+                appService.reject(projectId, " 范围太大，先做 MVP ", false));
 
         // 门语义零回归：驳回落留痕、停留 BA 段（回流是留痕后的编排动作，不改变门行为）
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_BA);
@@ -344,7 +344,7 @@ class ProjectGateAppServiceTest {
         when(baInterviewAppService.runInterviewTurn(anyLong(), anyString()))
                 .thenThrow(new RuntimeException("对话基座不可用"));
 
-        ProjectDetailResponse response = appService.reject(projectId, "范围太大");
+        ProjectDetailResponse response = appService.reject(projectId, "范围太大", false);
 
         // 起跑失败不阻断驳回留痕（照「BA 起跑失败不回滚建项目」口径）：停留 + 留痕 + SSE 完好
         assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_BA);
@@ -352,12 +352,69 @@ class ProjectGateAppServiceTest {
         verify(notificationAppService).publish(eq(ProjectEventTypes.STAGE_CHANGED), any());
     }
 
+    // ---------- #46 G2 驳回回流：Demo 段驳回 → DEMO 修正 run 自动发起（可选联动 BA） ----------
+
+    @Test
+    void given_demo_reject_when_reject_then_correction_run_auto_started_without_ba() throws Exception {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_DEMO, 1);
+
+        ProjectDetailResponse response = asUser(7L, () ->
+                appService.reject(projectId, " 首页配色太暗，改成明亮风格 ", false));
+
+        // 门语义零回归：驳回落留痕、停留 DEMO 段（回流是留痕后的编排动作，不改变门行为）
+        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
+        assertThat(soleConfirmationRow().get("reason")).isEqualTo("首页配色太暗，改成明亮风格");
+
+        // 修正 run 自动发起：门操作内起 DEMO 修正，驳回意见进 prompt（可追溯）
+        ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
+        verify(agentTaskAppService).dispatchDemoCorrectionRun(eq(projectId), prompt.capture());
+        assertThat(prompt.getValue()).contains("首页配色太暗，改成明亮风格");
+        // 不带标记不惊动 BA（v1 只认显式标记，不做语义自动判定）
+        verifyNoInteractions(baInterviewAppService);
+    }
+
+    @Test
+    void given_demo_reject_with_requirement_change_when_reject_then_ba_reflow_besides_correction()
+            throws Exception {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_DEMO, 1);
+
+        asUser(7L, () -> appService.reject(projectId, "整体改成多语言站点，中英日三语", true));
+
+        // 门语义零回归：驳回落留痕、停留 DEMO 段（带标记不改变门行为，只是叠加回流）
+        assertThat(openIteration(projectId).getStage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
+        assertThat(soleConfirmationRow().get("reason")).isEqualTo("整体改成多语言站点，中英日三语");
+
+        // 双回流：DEMO 修正 run（意见进修正 prompt）+ BA 续轮（意见进 BA 上下文触发 PRD 修订）
+        ArgumentCaptor<String> correctionPrompt = ArgumentCaptor.forClass(String.class);
+        verify(agentTaskAppService).dispatchDemoCorrectionRun(eq(projectId),
+                correctionPrompt.capture());
+        assertThat(correctionPrompt.getValue()).contains("中英日三语");
+        ArgumentCaptor<String> baPrompt = ArgumentCaptor.forClass(String.class);
+        verify(baInterviewAppService).runInterviewTurn(eq(projectId), baPrompt.capture());
+        assertThat(baPrompt.getValue()).contains("中英日三语");
+    }
+
+    @Test
+    void given_correction_start_failure_when_reject_then_rejection_kept_and_ba_reflow_alive() {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_DEMO, 1);
+        when(agentTaskAppService.dispatchDemoCorrectionRun(anyLong(), anyString()))
+                .thenThrow(new RuntimeException("编码引擎不可用"));
+
+        ProjectDetailResponse response = appService.reject(projectId, "配色太暗", true);
+
+        // 修正起跑失败不阻断驳回留痕（照「起跑失败不回滚」口径），也不吞 BA 回流（两路独立护栏）
+        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_DEMO);
+        assertThat(confirmationCount()).isEqualTo(1);
+        verify(notificationAppService).publish(eq(ProjectEventTypes.STAGE_CHANGED), any());
+        verify(baInterviewAppService).runInterviewTurn(eq(projectId), anyString());
+    }
+
     @Test
     void given_blank_reason_when_reject_then_prj_011_no_row() {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
 
         // reason 必填由留痕不变量兜底（DomainException，REST 面 @NotBlank 先行同码）
-        assertThatThrownBy(() -> appService.reject(projectId, " "))
+        assertThatThrownBy(() -> appService.reject(projectId, " ", false))
                 .isInstanceOf(CartisanException.class)
                 .hasMessageContaining(ProjectMessage.REJECT_REASON_REQUIRED.message());
 
@@ -370,14 +427,14 @@ class ProjectGateAppServiceTest {
     void given_dev_stage_when_reject_then_prj_009() {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_DEV, 1);
 
-        assertThatThrownBy(() -> appService.reject(projectId, "方向不对"))
+        assertThatThrownBy(() -> appService.reject(projectId, "方向不对", false))
                 .isInstanceOf(ApplicationException.class)
                 .hasMessageContaining(ProjectMessage.STAGE_NO_GATE.message());
     }
 
     @Test
     void given_missing_project_when_reject_then_prj_001() {
-        assertThatThrownBy(() -> appService.reject(-1L, "不对"))
+        assertThatThrownBy(() -> appService.reject(-1L, "不对", false))
                 .isInstanceOf(ApplicationException.class)
                 .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
     }
@@ -433,7 +490,7 @@ class ProjectGateAppServiceTest {
     void given_reason_when_reject_then_feedback_chunk_carries_reason() {
         Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
 
-        appService.reject(projectId, " 范围太大，先做 MVP ");
+        appService.reject(projectId, " 范围太大，先做 MVP ", false);
 
         ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
         verify(knowledgePort).index(spec.capture());
