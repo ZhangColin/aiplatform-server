@@ -56,7 +56,9 @@ _Avoid_: 平台通知（那是状态变化广播，两类不混）
 
 **对话智能体（Conversational Agent）**：
 BA 等对话型角色的运行形态：平台进程内的 AgentScope HarnessAgent（base.chatagent，ADR-0002），per-call 以 RuntimeContext（sessionId/userId）寻址状态槽位；模型串 `provider:model`（白名单暂仅 deepseek），对话级用量埋点（engine=agentscope）。与编码引擎双轨分野：`Project.engine` 只指编码引擎，对话角色不走 opencode/dsh。
-_Avoid_: 与开发智能体/编码引擎概念混用（两类运行时、两套适配，不共享会话与引擎配置）
+**事件桥（Event Bridge）**：AgentScope 类型化事件 → 平台 agent 流事件帧的单点映射（文本/思考增量、工具调用、轮次边界、终态），runId 锚定、关联字段（projectId）随帧注入，经既有 agent 流通道触达（前端零新增协议，#45）。
+**工作区桥（Workspace Bridge）**：对话智能体的 workspace 锚定两形态——本地兜底（配置路径）与项目 dev 工作区（workspaceId 解析为 dev 容器，文件操作经 docker exec 落容器 `/workspace`，与编码引擎同视图，写入即进源码包，#45）。
+_Avoid_: 与开发智能体/编码引擎概念混用（两类运行时、两套适配，不共享会话与引擎配置）；对话智能体的「会话」与编码引擎会话（agt_agent_sessions）混用（会话恢复归 #48 另接线）
 
 **中间件资源（Middleware Resource）**：
 项目环境挂载的数据库 / Redis / 对象存储，随环境生命周期供给与隔离（attachResource）。

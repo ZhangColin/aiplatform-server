@@ -7,8 +7,9 @@ import org.springframework.stereotype.Component;
 
 /**
  * 对话智能体配置（#44，前缀 app.chatagent）：模型默认值 / 默认人格 / agent 名 /
- * 工作区根 / 单轮超时。workspace 为空时用 AgentScope 默认（.agentscope/workspace），
- * 项目级工作区接线归 #45。
+ * 工作区根 / 单轮超时。workspace 是本地兜底工作区（#45：命令未带 workspaceId 时用），
+ * 为空时用 AgentScope 默认（.agentscope/workspace）；带 workspaceId 的对话解析为
+ * 项目 dev 工作区（容器文件面，不经此配置）。
  */
 @Component
 @ConfigurationProperties(prefix = "app.chatagent")

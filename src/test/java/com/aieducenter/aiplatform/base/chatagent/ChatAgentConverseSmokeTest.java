@@ -2,6 +2,8 @@ package com.aieducenter.aiplatform.base.chatagent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
+import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentCommand;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentReply;
 import com.aieducenter.aiplatform.base.chatagent.domain.port.ChatAgentClient;
@@ -23,9 +25,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * 真实对话冒烟（#44 验收）：平台进程内 HarnessAgent 走 DeepSeek 真模型跑通一轮
- * 对话——流式文本增量可观测（回调序列拼接 = 汇聚文本），该轮产生恰一条 UsageEvent
- * 落库（subject/dims 归属、engine=agentscope）。
+ * 真实对话冒烟（#44 验收 + #45 流桥）：平台进程内 HarnessAgent 走 DeepSeek 真模型
+ * 跑通一轮对话——流帧可观测（task-start → session-created → text 增量连续 →
+ * task-finish，runId 锚定、增量拼接 = 汇聚文本），该轮产生恰一条 UsageEvent 落库
+ * （subject/dims 归属、engine=agentscope）。
  *
  * <p>DEEPSEEK_API_KEY 未设置时整类跳过（Assumption，不失败）：流式/计量/幂等键
  * 行为在 {@code AgentscopeChatAgentClientTest}（mock 事件流）已覆盖，本类只验
@@ -70,19 +73,27 @@ class ChatAgentConverseSmokeTest {
     }
 
     @Test
-    void given_real_deepseek_when_converse_then_streamed_text_and_usage_recorded() {
+    void given_real_deepseek_when_converse_then_streamed_frames_and_usage_recorded() {
         String runId = "smoke-chat-" + UUID.randomUUID();
-        List<String> deltas = new ArrayList<>();
+        List<AgentEvent> frames = new ArrayList<>();
 
         ChatAgentReply reply = chatAgentClient.converse(
                 new ChatAgentCommand(runId, "用一句话介绍你自己", null, null,
                         "smoke-session", "smoke-user",
-                        new UsageContext("smoke-prj", Map.of("scene", "chatagent-smoke"))),
-                deltas::add);
+                        new UsageContext("smoke-prj", Map.of("scene", "chatagent-smoke")),
+                        null, Map.of()),
+                frames::add);
 
+        // 帧序与锚定（#45 事件桥验收：流事件经端口可观测、文本增量连续）
+        assertThat(frames.get(0).type()).isEqualTo(AgentEventTypes.TASK_START);
+        assertThat(frames.get(0).payload()).containsEntry("runId", runId);
+        List<String> deltas = textDeltas(frames);
+        assertThat(deltas).isNotEmpty();
+        assertThat(String.join("", deltas)).isEqualTo(reply.text());
+        assertThat(frames.get(frames.size() - 1).type()).isEqualTo(AgentEventTypes.TASK_FINISH);
+        assertThat(frames.get(frames.size() - 1).payload()).containsEntry("runId", runId);
         assertThat(reply.runId()).isEqualTo(runId);
         assertThat(reply.text()).isNotBlank();
-        assertThat(String.join("", deltas)).isEqualTo(reply.text());
 
         Map<String, Object> row = jdbcTemplate.queryForMap(
                 "SELECT subject, provider, engine, input, output "
@@ -95,5 +106,17 @@ class ChatAgentConverseSmokeTest {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM met_usage_events WHERE run_id = ?", Integer.class, runId))
                 .isEqualTo(1);
+    }
+
+    private static List<String> textDeltas(List<AgentEvent> frames) {
+        List<String> deltas = new ArrayList<>();
+        for (AgentEvent frame : frames) {
+            if ("text".equals(frame.type())) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) frame.payload().get("data");
+                deltas.add((String) data.get("delta"));
+            }
+        }
+        return deltas;
     }
 }

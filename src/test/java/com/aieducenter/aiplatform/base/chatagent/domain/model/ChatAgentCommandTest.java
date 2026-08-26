@@ -10,12 +10,14 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@link ChatAgentCommand} 入参校验（#44：runId/prompt/sessionId 必填，其余可空各取默认）。
+ * {@link ChatAgentCommand} 入参校验（#44：runId/prompt/sessionId 必填，其余可空各取
+ * 默认；#45：workspaceId/streamCorrelation 透传 + 信封契约校验）。
  */
 class ChatAgentCommandTest {
 
     private ChatAgentCommand command(String runId, String prompt, String sessionId) {
-        return new ChatAgentCommand(runId, prompt, null, null, sessionId, null, null);
+        return new ChatAgentCommand(runId, prompt, null, null, sessionId, null,
+                null, null, null);
     }
 
     @Test
@@ -43,7 +45,7 @@ class ChatAgentCommandTest {
 
         ChatAgentCommand command = new ChatAgentCommand(
                 "run-1", "你好", "你是 BA", "deepseek:deepseek-v4-flash",
-                "s-1", "alice", usage);
+                "s-1", "alice", usage, "42", Map.of("projectId", "42"));
 
         assertThat(command.runId()).isEqualTo("run-1");
         assertThat(command.prompt()).isEqualTo("你好");
@@ -52,6 +54,24 @@ class ChatAgentCommandTest {
         assertThat(command.sessionId()).isEqualTo("s-1");
         assertThat(command.userId()).isEqualTo("alice");
         assertThat(command.usageContext()).isEqualTo(usage);
+        assertThat(command.workspaceId()).isEqualTo("42");
+        assertThat(command.streamCorrelation()).containsEntry("projectId", "42");
+    }
+
+    @Test
+    void given_null_correlation_when_construct_then_normalized_to_empty() {
+        ChatAgentCommand command = new ChatAgentCommand(
+                "run-1", "你好", null, null, "s-1", null, null, null, null);
+
+        assertThat(command.streamCorrelation()).isEmpty();
+    }
+
+    @Test
+    void given_correlation_with_type_key_when_construct_then_rejected() {
+        assertThatThrownBy(() -> new ChatAgentCommand(
+                "run-1", "你好", null, null, "s-1", null, null, null, Map.of("type", "evil")))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining(ChatAgentMessage.COMMAND_FIELDS_INCOMPLETE.message());
     }
 
     @Test

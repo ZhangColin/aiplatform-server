@@ -57,6 +57,8 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 | `tool` | 引擎透传 | … + `data` | 工具调用 |
 | `step-start` / `step-finish` | 引擎透传 | … + `data` | 步骤边界 |
 
+> **对话智能体事件桥（#45，ADR-0002）**：AgentScope HarnessAgent 的事件经单点映射表（`AgentscopeEventMapper`）转本表帧型，走同一通道同一信封——`engine=agentscope`，帧序 `task-start → session-created（sessionId 首见）→ 过程帧 → task-finish/error`。与 opencode 的差异：opencode 同步 message 整批回，`text` 帧是最终文本；AgentScope 流式回，`text`/`reasoning` 帧为增量（`data.delta`，前端按序拼接）。`tool` 帧 `data` 为 `{toolCallId, toolName, phase: start|end}`，`step-*` 对应模型调用边界。HITL 挂起→等待点的映射归 #48。
+
 > 字段表为初版，随片 2 / 片 5 spec 细化；信封与名册的任何变更即改本文。
 
 ## 前端通用模块（约定）
