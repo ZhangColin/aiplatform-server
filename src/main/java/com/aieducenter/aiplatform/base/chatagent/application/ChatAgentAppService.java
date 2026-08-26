@@ -73,6 +73,16 @@ public class ChatAgentAppService {
     }
 
     /**
+     * 静默轮（#39 取名等平台内部轻调用）：不经流桥——无 SSE 帧、不落等待点、无
+     * 终态联动（对话智能体通道的「无 UI」用法，前端零感知）；计量照报
+     * （usageContext 非空时，与 {@link #converse} 同口径）。失败照抛
+     * （DomainException），吞不吞归调用方——取名回落占位即吞。
+     */
+    public ChatAgentReply converseSilently(ChatAgentCommand command) {
+        return chatAgentClient.converse(command, event -> { });
+    }
+
+    /**
      * 异步跑一轮对话（#40 BA 访谈编排入口）：提交 {@link ChatAgentResumeGate} 串行
      * 执行后即返回（REST 快返回，过程帧经流桥进 SSE；失败经 error 帧表达，异常由
      * 闸吞掉记日志）。与 settle 续跑共闸——单会话一次一轮（新轮与续跑并发会互踩

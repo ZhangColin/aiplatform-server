@@ -57,10 +57,10 @@ class ProjectLifecycleCreateRollbackTest {
                 .save(any(com.aieducenter.aiplatform.business.project.domain.aggregate.Iteration.class));
 
         assertThatThrownBy(() -> appService.create(
-                new CreateProjectCommand("官网", null, "opencode", null)))
+                new CreateProjectCommand("做一个官网")))
                 .isInstanceOf(IllegalStateException.class);
 
-        // 落库失败 → 回收已落定的工作区；不发射任何 SSE、不开 BA 访谈
+        // 落库失败 → 回收已落定的工作区；不发射任何 SSE、不开 BA 访谈、不取名
         verify(workspaceLifecycleAppService).destroy("9300");
         verifyNoInteractions(notificationAppService);
         verifyNoInteractions(baInterviewAppService);

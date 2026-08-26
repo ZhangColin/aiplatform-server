@@ -69,9 +69,12 @@ public class ProjectController {
     }
 
     @PostMapping
-    @Operation(summary = "建项目（对话建项目：建即自动跑 BA 需求梳理）",
-            description = "引擎 = 后台全局配置的生效引擎（/api/admin/engine-config，未配置时 opencode；"
-                    + "显式 engine 仍可覆盖，项目创建时固化）→ dev 工作区 + 专属 pg/redis 就绪 → 第 1 期（BA 段 OPEN）。"
+    @Operation(summary = "建项目（一句话创建：建即自动跑 BA 需求梳理）",
+            description = "#39 创建精简：只传 requirement（可空 = 缺省开场提示）。项目名由 LLM 异步生成——"
+                    + "响应即返（名称 = 占位「未命名项目」），取名后台完成后详情/列表自然见新名（禁截取派生，"
+                    + "失败保占位经改名端点可改）；类型单模板服务端缺省；引擎 = 后台全局配置的生效引擎"
+                    + "（/api/admin/engine-config，未配置时 opencode）创建时固化。"
+                    + "dev 工作区 + 专属 pg/redis 就绪 → 第 1 期（BA 段 OPEN）。"
                     + "响应携带自动 BA 运行 runId（挂 /api/agent-events?runId= 的锚）。"
                     + "SSE：workspace-created → stage-changed(BA) → agent 流事件")
     public ApiResponse<ProjectCreatedResponse> create(@Valid @RequestBody CreateProjectCommand command) {

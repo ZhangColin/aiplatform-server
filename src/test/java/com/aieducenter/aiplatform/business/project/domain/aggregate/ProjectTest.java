@@ -70,6 +70,47 @@ class ProjectTest {
     }
 
     @Test
+    void given_llm_name_when_rename_then_name_changed() {
+        // #39：LLM 取名完成落位（占位 → 生成名）；改名端点（#43）复用同一行为
+        Project project = Project.create(Project.PLACEHOLDER_NAME, null, "opencode", 1L, null);
+
+        project.rename("品牌官网");
+
+        assertThat(project.getName()).isEqualTo("品牌官网");
+    }
+
+    @Test
+    void given_blank_name_when_rename_then_domain_error() {
+        Project project = Project.create(Project.PLACEHOLDER_NAME, null, "opencode", 1L, null);
+
+        assertThatThrownBy(() -> project.rename(" "))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NAME_BLANK.message());
+    }
+
+    @Test
+    void given_placeholder_name_when_rename_if_placeholder_then_renamed_and_true() {
+        Project project = Project.create(Project.PLACEHOLDER_NAME, null, "opencode", 1L, null);
+
+        boolean renamed = project.renameIfPlaceholder("品牌官网");
+
+        assertThat(renamed).isTrue(); // 占位守卫放行（LLM 取名落位）
+        assertThat(project.getName()).isEqualTo("品牌官网");
+    }
+
+    @Test
+    void given_user_renamed_name_when_rename_if_placeholder_then_kept_and_false() {
+        // 取名在飞时用户已改名（#43）→ 不覆写（守卫是聚合规则，非编排判断）
+        Project project = Project.create(Project.PLACEHOLDER_NAME, null, "opencode", 1L, null);
+        project.rename("我起的名字");
+
+        boolean renamed = project.renameIfPlaceholder("LLM 的名字");
+
+        assertThat(renamed).isFalse();
+        assertThat(project.getName()).isEqualTo("我起的名字");
+    }
+
+    @Test
     void given_unarchived_when_archive_then_archived_at_set() {
         Project project = Project.create("官网 demo", ProjectType.WEBSITE, "opencode", 1L, null);
 

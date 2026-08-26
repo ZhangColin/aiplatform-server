@@ -33,6 +33,12 @@ import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 @Getter
 public class Project extends Auditable implements AggregateRoot<Project, Long> {
 
+    /**
+     * 占位名（#39）：创建即落的 LLM 取名未完成/失败回落——取名后台完成后经
+     * {@link #rename} 落位，用户经改名端点（#43）亦可改。
+     */
+    public static final String PLACEHOLDER_NAME = "未命名项目";
+
     @Id
     @Column(name = "id", nullable = false, updatable = false)
     private Long id;
@@ -93,6 +99,29 @@ public class Project extends Auditable implements AggregateRoot<Project, Long> {
     public static Project create(String name, ProjectType type, String engine,
                                  Long workspaceId, Long ownerAccountId) {
         return new Project(name, type, engine, workspaceId, ownerAccountId);
+    }
+
+    /**
+     * 改名（#39 LLM 取名落位 / #43 改名端点共用）：名称可后改（占位名 → 生成名 /
+     * 用户改名），空白拒绝（PRJ_005，与建项目同口径——长度上限归调用方命令校验）。
+     */
+    public void rename(String name) {
+        if (name == null || name.isBlank()) {
+            throw new DomainException(ProjectMessage.PROJECT_NAME_BLANK);
+        }
+        this.name = name;
+    }
+
+    /**
+     * 占位名落位（#39 LLM 取名专用守卫）：仅当当前仍是占位名时改名并返回 true——
+     * 取名在飞时用户已改名（#43）或取名已完成则不动（返回 false，调用方不覆写）。
+     */
+    public boolean renameIfPlaceholder(String name) {
+        if (!PLACEHOLDER_NAME.equals(this.name)) {
+            return false;
+        }
+        rename(name);
+        return true;
     }
 
     /**

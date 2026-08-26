@@ -9,7 +9,8 @@ public enum ProjectMessage implements CodeMessage {
 
     PROJECT_NOT_FOUND(404, "PRJ_001", "项目不存在"),
 
-    ENGINE_UNKNOWN(400, "PRJ_002", "未知的开发智能体引擎"),
+    // PRJ_002 曾是「未知的开发智能体引擎」（建项目显式 engine 校验），#39 创建精简
+    // 后引擎唯一通道 = 全局配置（配置侧校验归 AGT_ 域），码位注销不复用
 
     ROLE_UNKNOWN(400, "PRJ_003", "未知的角色卡"),
 

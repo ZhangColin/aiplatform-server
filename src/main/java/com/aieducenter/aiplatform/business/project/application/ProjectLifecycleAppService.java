@@ -9,7 +9,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 
-import com.aieducenter.aiplatform.base.agentengine.application.AgentEngineRegistry;
 import com.aieducenter.aiplatform.base.agentengine.application.EngineConfigAppService;
 import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.CreateWorkspaceCommand;
@@ -37,6 +36,11 @@ import lombok.extern.slf4j.Slf4j;
  * SSE 通知（workspace-created + stage-changed）→ 前缀段自动开 BA 访谈（A3 §2.3
  * 「建项目即自动跑 BA（对话展开）」，编排对主链前缀的固定行为；#40 起走对话轨道）。
  *
+ * <p>创建精简（#39，spec 0002 §3.1 一句话创建）：入参只剩 requirement——引擎读
+ * 后台全局配置（#42）固化、类型单模板服务端缺省、项目名创建即落占位
+ * {@link Project#PLACEHOLDER_NAME} 后由 {@link ProjectNamingAppService} 异步 LLM
+ * 取名落位（响应不等取名，前端 invalidate 自然见到新名）。</p>
+ *
  * <p>事务形态（照片1b workspace 的形态）：Docker 副作用在业务事务外先行，库记录
  * 收进短事务；落库失败回收已落定的工作区不留孤儿容器。删除真删级联（A3 §4）：
  * 工作区物理销毁（尽力而为，失败不阻断记录删除）→ prj_* 行级联 → SSE
@@ -50,53 +54,53 @@ public class ProjectLifecycleAppService {
 
     private final WorkspaceLifecycleAppService workspaceLifecycleAppService;
     private final BaInterviewAppService baInterviewAppService;
-    private final AgentEngineRegistry engineRegistry;
     private final EngineConfigAppService engineConfigAppService;
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
     private final ProjectQueryAppService queryAppService;
     private final PlatformNotificationAppService notificationAppService;
     private final ProjectKnowledgeAppService knowledgeAppService;
+    private final ProjectNamingAppService namingService;
     private final TransactionTemplate transactionTemplate;
 
     public ProjectLifecycleAppService(WorkspaceLifecycleAppService workspaceLifecycleAppService,
                                       BaInterviewAppService baInterviewAppService,
-                                      AgentEngineRegistry engineRegistry,
                                       EngineConfigAppService engineConfigAppService,
                                       ProjectRepository projectRepository,
                                       IterationRepository iterationRepository,
                                       ProjectQueryAppService queryAppService,
                                       PlatformNotificationAppService notificationAppService,
                                       ProjectKnowledgeAppService knowledgeAppService,
+                                      ProjectNamingAppService namingService,
                                       TransactionTemplate transactionTemplate) {
         this.workspaceLifecycleAppService = workspaceLifecycleAppService;
         this.baInterviewAppService = baInterviewAppService;
-        this.engineRegistry = engineRegistry;
         this.engineConfigAppService = engineConfigAppService;
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
         this.queryAppService = queryAppService;
         this.notificationAppService = notificationAppService;
         this.knowledgeAppService = knowledgeAppService;
+        this.namingService = namingService;
         this.transactionTemplate = transactionTemplate;
     }
 
     /**
-     * 建项目：引擎解析先行（缺省 = 后台全局配置生效引擎，票 #42；显式传入校验
-     * PRJ_002，先于 Docker 副作用）→ dev 工作区落定 →
-     * 一事务 Project + 第 1 期（BA/OPEN/计数 0）→ SSE 双通知 → 自动开始 BA 访谈
-     * （#40 对话轨道，经 {@link BaInterviewAppService}）。
+     * 建项目（#39：只传 requirement）：引擎 = 后台全局配置的生效引擎（#42，未配置
+     * 回落注册表缺省）→ dev 工作区落定 → 一事务 Project（占位名 + 类型服务端缺省）
+     * + 第 1 期（BA/OPEN/计数 0）→ SSE 双通知 → 异步 LLM 取名（不等结果，失败保
+     * 占位）→ 自动开始 BA 访谈（#40 对话轨道，经 {@link BaInterviewAppService}）。
      * BA 起跑失败不回滚建项目（项目已成立，失败原因经 error 事件/日志表达）。
      */
     public ProjectCreatedResponse create(CreateProjectCommand command) {
-        String engine = resolveEngine(command.engine());
+        String engine = engineConfigAppService.activeEngineName();
         WorkspaceResponse workspace = workspaceLifecycleAppService
                 .create(new CreateWorkspaceCommand(EnvKind.DEV));
         Project project;
         try {
             project = transactionTemplate.execute(status -> {
                 Project saved = projectRepository.save(Project.create(
-                        command.name(), command.type(), engine,
+                        Project.PLACEHOLDER_NAME, null, engine,
                         Long.parseLong(workspace.workspaceId()), RequestContext.getUserId()));
                 iterationRepository.save(Iteration.open(saved.getId(), Iteration.FIRST_SEQ,
                         ProjectMainChain.firstStage()));
@@ -117,6 +121,9 @@ public class ProjectLifecycleAppService {
                 ProjectEventTypes.PROJECT_TYPE_FIELD, project.getType().name(),
                 ProjectEventTypes.ENGINE_FIELD, project.getEngine()));
         emitStageChanged(project.getId(), ProjectMainChain.firstStage());
+
+        // 异步 LLM 取名（#39：占位名先落，取名后台完成落位；空 requirement 不取名）
+        namingService.nameAsync(project.getId(), command.requirement());
 
         // 前缀段自动：建项目即开始 BA 访谈（#40 对话轨道：欢迎语 + 首个澄清问题挂
         // QUESTION 等待点经 SSE 触达；初始描述即开场输入）
@@ -191,21 +198,6 @@ public class ProjectLifecycleAppService {
     }
 
     // ---------- 内部 ----------
-
-    /**
-     * 引擎解析：空 = 后台全局配置的生效引擎（票 #42：平台统一配置，未配置回落
-     * 注册表缺省）；未知名 PRJ_002（建项目入参校验，先于 Docker 副作用）。
-     */
-    private String resolveEngine(String engine) {
-        if (engine == null || engine.isBlank()) {
-            return engineConfigAppService.activeEngineName();
-        }
-        try {
-            return engineRegistry.require(engine.trim()).info().name();
-        } catch (ApplicationException e) {
-            throw new ApplicationException(ProjectMessage.ENGINE_UNKNOWN, engine);
-        }
-    }
 
     /** stage-changed 发射（建项目起始段 BA 的编排落位；门决策/DEV→TEST 见各自编排）。 */
     private void emitStageChanged(Long projectId, String stage) {

@@ -101,10 +101,10 @@ class ProjectControllerTest {
                 new ProjectCreatedResponse(detailOf("100", ProjectStatus.IN_PROGRESS,
                         "BA", 0, false), "run-1", true));
 
+        // #39 一句话创建：请求体只传 requirement（name/type/engine 从契约面消失）
         performAsUser(post("/api/projects")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"官网 demo\",\"engine\":\"opencode\","
-                                + "\"requirement\":\"做一个官网\"}"))
+                        .content("{\"requirement\":\"做一个官网\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.project.id").value("100"))
@@ -118,10 +118,11 @@ class ProjectControllerTest {
     }
 
     @Test
-    void given_blank_name_when_create_then_rejected_as_400() throws Exception {
+    void given_oversized_requirement_when_create_then_rejected_as_400() throws Exception {
+        // requirement 是创建唯一入参（可空）；长度上限 5000 仍守门
         performAsUser(post("/api/projects")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\" \"}"))
+                        .content("{\"requirement\":\"" + "长".repeat(5001) + "\"}"))
                 .andExpect(status().isBadRequest());
     }
 

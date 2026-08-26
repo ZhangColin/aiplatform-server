@@ -9,6 +9,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
@@ -137,6 +138,29 @@ class ChatAgentAppServiceTest {
         assertThatCode(() -> sinkCaptor.getValue().accept(
                 new AgentEvent(AgentEventTypes.TASK_START, Map.of("runId", "run-3"))))
                 .doesNotThrowAnyException();
+    }
+
+    // ---------- #39：静默轮（平台内部轻调用，无流桥） ----------
+
+    @Test
+    void given_silent_command_when_converse_silently_then_no_frame_published() {
+        // 取名等平台内部轻调用：不进 agent 流通道（无 SSE 帧、不落等待点、无终态联动）
+        ChatAgentCommand command = new ChatAgentCommand("run-n", "给项目取名", null, null,
+                "naming-1", null, null, null, Map.of());
+        when(chatAgentClient.converse(eq(command), any()))
+                .thenReturn(new ChatAgentReply("run-n", "品牌官网"));
+        ChatAgentAppService appService = appService();
+
+        ChatAgentReply reply = appService.converseSilently(command);
+
+        assertThat(reply.text()).isEqualTo("品牌官网");
+        // 适配器侧 sink 被喂满过程帧也不外发（丢弃式 sink）
+        verify(chatAgentClient).converse(eq(command), sinkCaptor.capture());
+        sinkCaptor.getValue().accept(new AgentEvent(AgentEventTypes.TASK_START,
+                Map.of("runId", "run-n")));
+        sinkCaptor.getValue().accept(new AgentEvent(AgentEventTypes.WAIT_RAISED,
+                Map.of("runId", "run-n")));
+        verifyNoInteractions(streamAppService, waitAppService);
     }
 
     // ---------- #40：异步轮入口（编排层快返回 + 会话串行） ----------

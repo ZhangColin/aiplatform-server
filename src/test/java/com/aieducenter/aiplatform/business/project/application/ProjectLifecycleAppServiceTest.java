@@ -82,6 +82,10 @@ class ProjectLifecycleAppServiceTest {
     @MockitoBean
     private PlatformNotificationAppService notificationAppService;
 
+    /** 取名服务 mock（#39：编排只验触发，取名本体见 ProjectNamingAppServiceTest）。 */
+    @MockitoBean
+    private ProjectNamingAppService namingService;
+
     /** 知识端口 mock（A5 §5 删除级联清理验证）。 */
     @MockitoBean
     private KnowledgePort knowledgePort;
@@ -94,14 +98,14 @@ class ProjectLifecycleAppServiceTest {
     }
 
     @Test
-    void given_global_config_switched_when_create_without_engine_then_new_engine_fixed() {
-        // 票 #42 验收：后台切引擎 → 之后新建项目用新引擎（创建时读全局配置固化进项目记录）
+    void given_global_config_switched_when_create_then_new_engine_fixed() {
+        // 票 #42 验收（#39 起唯一通道）：后台切引擎 → 之后新建项目用新引擎（创建时读全局配置固化进项目记录）
         jdbcTemplate.update("INSERT INTO agt_engine_config (id, active_engine) VALUES (1, 'dsh')");
         stubWorkspace("9102", "aiplatform-dev-102");
         stubInterviewAccepted("run-1");
 
         ProjectCreatedResponse response = appService.create(
-                new CreateProjectCommand("切换后项目", null, null, "做一个官网"));
+                new CreateProjectCommand("做一个官网"));
 
         assertThat(response.project().engine()).isEqualTo("dsh");
         assertThat(projectRepository.findById(Long.parseLong(response.project().id())))
@@ -110,14 +114,13 @@ class ProjectLifecycleAppServiceTest {
     }
 
     @Test
-    void given_global_config_when_create_with_explicit_engine_then_explicit_wins() {
-        // 显式 engine 覆盖全局配置（参数移除归 #39）；存量项目固化创建时引擎同源本列
-        jdbcTemplate.update("INSERT INTO agt_engine_config (id, active_engine) VALUES (1, 'dsh')");
+    void given_no_config_when_create_then_registry_default_engine() {
+        // 未配置全局引擎 → 注册表缺省 opencode（#42 回落口径经 activeEngineName 收口）
         stubWorkspace("9103", "aiplatform-dev-103");
         stubInterviewAccepted("run-1");
 
         ProjectCreatedResponse response = appService.create(
-                new CreateProjectCommand("显式引擎项目", null, "opencode", "做一个官网"));
+                new CreateProjectCommand("做一个官网"));
 
         assertThat(response.project().engine()).isEqualTo("opencode");
     }
@@ -131,8 +134,7 @@ class ProjectLifecycleAppServiceTest {
         ProjectCreatedResponse response = RequestContext.runFor(
                 new RequestContext(null, null, null, null, 3897654321098765432L,
                         "归属测试", null, null),
-                () -> appService.create(new CreateProjectCommand("归属项目", null,
-                        "opencode", "做一个官网")));
+                () -> appService.create(new CreateProjectCommand("做一个官网")));
 
         assertThat(projectRepository.findById(Long.parseLong(response.project().id())))
                 .hasValueSatisfying(project -> assertThat(project.getOwnerAccountId())
@@ -145,7 +147,7 @@ class ProjectLifecycleAppServiceTest {
         stubInterviewAccepted("run-1");
 
         ProjectCreatedResponse response = appService.create(
-                new CreateProjectCommand("官网 demo", null, "opencode", "做一个官网"));
+                new CreateProjectCommand("做一个官网"));
 
         // 工作区副作用先行：dev 工作区
         verify(workspaceLifecycleAppService).create(new CreateWorkspaceCommand(EnvKind.DEV));
@@ -157,8 +159,11 @@ class ProjectLifecycleAppServiceTest {
                 .findByProjectIdAndStatus(projectId, IterationStatus.OPEN).orElseThrow();
         assertThat(iteration.getSeq()).isEqualTo(1);
         assertThat(iteration.getStage()).isEqualTo(ProjectMainChain.STAGE_BA);
-        assertThat(response.project().name()).isEqualTo("官网 demo");
-        assertThat(response.project().type()).isEqualTo(ProjectType.WEBSITE); // 类型缺省官网
+        // #39：创建即落占位名（响应不等取名），类型/引擎服务端定
+        assertThat(response.project().name()).isEqualTo(Project.PLACEHOLDER_NAME);
+        assertThat(projectRepository.findById(projectId)).hasValueSatisfying(
+                project -> assertThat(project.getName()).isEqualTo(Project.PLACEHOLDER_NAME));
+        assertThat(response.project().type()).isEqualTo(ProjectType.WEBSITE); // 单模板服务端缺省
         assertThat(response.project().engine()).isEqualTo("opencode");
         assertThat(response.project().workspaceId()).isEqualTo("9100");
         assertThat(response.project().status()).isEqualTo(ProjectStatus.IN_PROGRESS);
@@ -173,7 +178,7 @@ class ProjectLifecycleAppServiceTest {
                 created.capture());
         assertThat(created.getValue())
                 .containsEntry("projectId", projectId.toString())
-                .containsEntry("projectName", "官网 demo")
+                .containsEntry("projectName", Project.PLACEHOLDER_NAME)
                 .containsEntry("container", "aiplatform-dev-100")
                 .containsEntry("projectType", "WEBSITE")
                 .containsEntry("engine", "opencode");
@@ -185,34 +190,26 @@ class ProjectLifecycleAppServiceTest {
                 .containsEntry("stage", ProjectMainChain.STAGE_BA)
                 .containsEntry("stageLabel", "需求梳理");
 
+        // 异步取名（#39）：requirement 为取名输入，触发即返（不等结果）
+        verify(namingService).nameAsync(projectId, "做一个官网");
+
         // 前缀段自动：BA 访谈开场（#40 对话轨道；初始描述即首条对话输入）
         verify(baInterviewAppService).runInterviewTurn(projectId, "做一个官网");
     }
 
     @Test
-    void given_blank_requirement_when_create_then_default_kickoff_prompt() {
+    void given_blank_requirement_when_create_then_default_kickoff_prompt_and_no_naming() {
         stubWorkspace("9101", "aiplatform-dev-101");
         stubInterviewAccepted("run-2");
 
         ProjectCreatedResponse response = appService.create(
-                new CreateProjectCommand("商城", ProjectType.ECOMMERCE, "dsh", " "));
+                new CreateProjectCommand(" "));
 
-        assertThat(response.project().type()).isEqualTo(ProjectType.ECOMMERCE);
-        // 空需求描述 → 缺省开场提示（对话展开起点）
+        assertThat(response.project().type()).isEqualTo(ProjectType.WEBSITE); // 服务端缺省
+        // 空需求描述 → 缺省开场提示（对话展开起点）；取名守卫在命名服务内
+        //（blank 不发起轻调用，见 ProjectNamingAppServiceTest）
         verify(baInterviewAppService).runInterviewTurn(
                 Long.parseLong(response.project().id()), RolePreset.DEFAULT_KICKOFF_PROMPT);
-    }
-
-    @Test
-    void given_unknown_engine_when_create_then_prj_002_and_no_workspace_side_effect() {
-        assertThatThrownBy(() -> appService.create(
-                new CreateProjectCommand("官网", null, "codex", null)))
-                .isInstanceOf(ApplicationException.class)
-                .hasMessageContaining(ProjectMessage.ENGINE_UNKNOWN.message());
-
-        // 引擎校验先于 Docker 副作用
-        verify(workspaceLifecycleAppService, never()).create(any());
-        verifyNoRows();
     }
 
     @Test
@@ -222,7 +219,7 @@ class ProjectLifecycleAppServiceTest {
                 .thenThrow(new RuntimeException("对话智能体不可用"));
 
         ProjectCreatedResponse response = appService.create(
-                new CreateProjectCommand("官网 demo", null, "opencode", null));
+                new CreateProjectCommand(null));
 
         // BA 起跑失败不回滚建项目（项目已成立）
         assertThat(response.accepted()).isFalse();
