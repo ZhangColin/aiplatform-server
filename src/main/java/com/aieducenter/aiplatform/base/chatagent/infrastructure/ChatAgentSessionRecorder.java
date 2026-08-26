@@ -3,6 +3,7 @@ package com.aieducenter.aiplatform.base.chatagent.infrastructure;
 import org.springframework.stereotype.Component;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentSessionAppService;
+import com.aieducenter.aiplatform.base.chatagent.application.ChatAgentAppService;
 
 /**
  * 对话智能体会话登记收敛缝（#48）：session-created 发射口径的持久化判定 + settle
@@ -15,8 +16,8 @@ import com.aieducenter.aiplatform.base.agentengine.application.AgentSessionAppSe
 @Component
 public class ChatAgentSessionRecorder {
 
-    /** 对话智能体的引擎自述名（agt_agent_sessions.engine / UsageEvent.engine 同值）。 */
-    public static final String ENGINE = "agentscope";
+    /** 对话智能体的引擎自述名（正本在 {@link ChatAgentAppService#ENGINE}，此处别名沿用）。 */
+    public static final String ENGINE = ChatAgentAppService.ENGINE;
 
     private final AgentSessionAppService sessionAppService;
 

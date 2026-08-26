@@ -35,7 +35,7 @@ class ProjectLifecycleCreateRollbackTest {
     private WorkspaceLifecycleAppService workspaceLifecycleAppService;
 
     @MockitoBean
-    private ProjectAgentTaskAppService agentTaskAppService;
+    private BaInterviewAppService baInterviewAppService;
 
     @MockitoBean
     private PlatformNotificationAppService notificationAppService;
@@ -60,10 +60,10 @@ class ProjectLifecycleCreateRollbackTest {
                 new CreateProjectCommand("官网", null, "opencode", null)))
                 .isInstanceOf(IllegalStateException.class);
 
-        // 落库失败 → 回收已落定的工作区；不发射任何 SSE、不跑 BA
+        // 落库失败 → 回收已落定的工作区；不发射任何 SSE、不开 BA 访谈
         verify(workspaceLifecycleAppService).destroy("9300");
         verifyNoInteractions(notificationAppService);
-        verifyNoInteractions(agentTaskAppService);
+        verifyNoInteractions(baInterviewAppService);
         verify(notificationAppService, never()).publish(any(), any());
     }
 }

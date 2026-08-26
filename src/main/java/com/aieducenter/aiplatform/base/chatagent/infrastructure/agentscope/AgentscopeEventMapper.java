@@ -119,23 +119,78 @@ final class AgentscopeEventMapper {
      * 载荷形状；其余（工具参数确认/敏感动作）→ PERMISSION。data = 引擎载荷原样：
      * toolCalls 待确认清单 + {@code resumeContext}（恢复私货——settle 侧据此重建
      * ConfirmResult 续跑：modelString/userId/usageContext/streamCorrelation）。
+     *
+     * <p>#40：QUESTION 的 data 增 {@code questions} 投影（header/question/multiple/
+     * custom/options[{label}]，前端问答卡契约——multiple 恒 false / custom 恒 true：
+     * ask_user 一次一题开放可自由输入；custom 必须显式 true，否则无选项题整题被
+     * 前端收窄丢弃）。摘要口径与 opencode 问答对齐 = 问题文本（截断保短）。</p>
      */
     AgentEvent waitRaised(RequireUserConfirmEvent event, Map<String, Object> resumeContext) {
         List<ToolUseBlock> toolCalls = event.getToolCalls();
-        boolean question = toolCalls.stream()
-                .anyMatch(tc -> ASK_USER_TOOL.equals(tc.getName()));
+        List<ToolUseBlock> questions = toolCalls.stream()
+                .filter(tc -> ASK_USER_TOOL.equals(tc.getName())).toList();
+        boolean question = !questions.isEmpty();
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("type", question ? "question" : "permission");
         data.put("toolCalls", toolCallPayloads(toolCalls));
+        if (question) {
+            data.put("questions", questionPayloads(questions));
+        }
         data.putAll(resumeContext);
         return new AgentEvent(AgentEventTypes.WAIT_RAISED, Map.of(
                 AgentEventTypes.WAIT_RUN_FIELD, runId,
                 AgentEventTypes.WAIT_SESSION_FIELD, sessionId,
                 "engine", engine,
                 AgentEventTypes.WAIT_KIND_FIELD, question ? "QUESTION" : "PERMISSION",
-                AgentEventTypes.WAIT_SUMMARY_FIELD, summaryOf(toolCalls),
+                AgentEventTypes.WAIT_SUMMARY_FIELD, question
+                        ? summaryOfQuestion(questions.get(0))
+                        : summaryOf(toolCalls),
                 AgentEventTypes.WAIT_ENGINE_REF_FIELD, nvl(event.getReplyId()),
                 AgentEventTypes.WAIT_DATA_FIELD, data));
+    }
+
+    /**
+     * 提问载荷投影（ask_user input → 前端问答卡形状）：header 缺省中性兜底；
+     * options 字符串列表 → {label} 对象列表（无选项纯开放题也保留——custom=true
+     * 恒可自由输入）。
+     */
+    private static List<Map<String, Object>> questionPayloads(List<ToolUseBlock> questions) {
+        return questions.stream().map(tc -> {
+            Map<String, Object> input = tc.getInput() != null ? tc.getInput() : Map.of();
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("header", textOrDefault(input.get("header"), "提问"));
+            payload.put("question", textOrDefault(input.get("question"), ""));
+            payload.put("multiple", false);
+            payload.put("custom", true);
+            payload.put("options", optionPayloads(input.get("options")));
+            return payload;
+        }).toList();
+    }
+
+    private static List<Map<String, Object>> optionPayloads(Object options) {
+        if (!(options instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .map(option -> Map.<String, Object>of("label", String.valueOf(option)))
+                .toList();
+    }
+
+    /** 问答中性短文本：问题文本（截断保短，对齐 opencode questionSummary 口径）。 */
+    private static String summaryOfQuestion(ToolUseBlock askUser) {
+        Map<String, Object> input = askUser.getInput() != null ? askUser.getInput() : Map.of();
+        String text = textOrDefault(input.get("question"), "");
+        if (text.isBlank()) {
+            return "智能体提问";
+        }
+        return text.length() > 100 ? text.substring(0, 100) : text;
+    }
+
+    private static String textOrDefault(Object value, String fallback) {
+        if (value == null || String.valueOf(value).isBlank()) {
+            return fallback;
+        }
+        return String.valueOf(value);
     }
 
     /** 待确认工具清单载荷（id/name/input——ConfirmResult 重建所需的最小面）。 */

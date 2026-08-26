@@ -209,8 +209,58 @@ class AgentscopeEventMapperTest {
 
             assertThat(frame.payload()).containsEntry(
                     AgentEventTypes.WAIT_KIND_FIELD, "QUESTION");
+            // 摘要 = 问题文本（对齐 opencode 问答口径，非工具名）
             assertThat(frame.payload()).containsEntry(
-                    AgentEventTypes.WAIT_SUMMARY_FIELD, "ask_user");
+                    AgentEventTypes.WAIT_SUMMARY_FIELD, "用哪个框架?");
+        }
+
+        @Test
+        void ask_user_question_body_projects_pending_questions_shape() {
+            // #40：QUESTION body 增 questions 投影（前端问答卡契约 header/question/
+            // multiple/custom/options[{label}]——custom 必须显式 true，否则无选项题
+            // 整题被前端丢弃）；toolCalls 恢复私货面不动（settle 侧仍按它重建）
+            RequireUserConfirmEvent event = new RequireUserConfirmEvent("reply-14", java.util.List.of(
+                    toolCall("tc-q", "ask_user", Map.of(
+                            "header", "目标用户",
+                            "question", "这个官网主要面向谁?",
+                            "options", java.util.List.of("企业客户", "个人用户")))));
+
+            AgentEvent frame = mapper.waitRaised(event, resumeContext("deepseek:deepseek-v4-flash"));
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> data = (Map<String, Object>) frame.payload()
+                    .get(AgentEventTypes.WAIT_DATA_FIELD);
+            assertThat(data.get("questions")).isEqualTo(java.util.List.of(Map.of(
+                    "header", "目标用户",
+                    "question", "这个官网主要面向谁?",
+                    "multiple", false,
+                    "custom", true,
+                    "options", java.util.List.of(
+                            Map.of("label", "企业客户"), Map.of("label", "个人用户")))));
+            assertThat(data.get("toolCalls")).isEqualTo(java.util.List.of(Map.of(
+                    "id", "tc-q", "name", "ask_user",
+                    "input", Map.of("header", "目标用户",
+                            "question", "这个官网主要面向谁?",
+                            "options", java.util.List.of("企业客户", "个人用户")))));
+        }
+
+        @Test
+        void ask_user_without_header_or_options_still_answerable() {
+            // header 缺省中性兜底、options 空 + custom=true：纯开放题前端仍可自由输入作答
+            RequireUserConfirmEvent event = new RequireUserConfirmEvent("reply-15", java.util.List.of(
+                    toolCall("tc-o", "ask_user", Map.of("question", "还有什么要补充的?"))));
+
+            AgentEvent frame = mapper.waitRaised(event, resumeContext("deepseek:deepseek-v4-flash"));
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> data = (Map<String, Object>) frame.payload()
+                    .get(AgentEventTypes.WAIT_DATA_FIELD);
+            assertThat(data.get("questions")).isEqualTo(java.util.List.of(Map.of(
+                    "header", "提问",
+                    "question", "还有什么要补充的?",
+                    "multiple", false,
+                    "custom", true,
+                    "options", java.util.List.of())));
         }
 
         @Test

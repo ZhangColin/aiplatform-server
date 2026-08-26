@@ -79,6 +79,10 @@ class ProjectAgentTaskAppServiceTest {
     @MockitoBean
     private KnowledgePort knowledgePort;
 
+    /** BA 访谈编排 mock（#40 双轨分野：BA 角色路由目标；真实编排见 BaInterviewAppServiceTest）。 */
+    @MockitoBean
+    private BaInterviewAppService baInterviewAppService;
+
     @AfterEach
     void tearDown() {
         jdbcTemplate.update("DELETE FROM prj_iterations");
@@ -86,51 +90,38 @@ class ProjectAgentTaskAppServiceTest {
     }
 
     @Test
-    void given_open_ba_iteration_when_dispatch_without_role_then_stage_default_and_counted() {
+    void given_open_ba_iteration_when_dispatch_without_role_then_routed_to_interview() {
+        // #40 双轨分野：BA 段自由补充（阶段默认角色 BA）续 BA 会话——引擎零交互、
+        // 不做知识注入（访谈是对话上下文不是 run prompt）
         Project project = persistedProject("opencode");
         persistedIteration(project, ProjectMainChain.STAGE_BA);
-        when(agentTaskAppService.dispatch(anyString(), any(), any()))
-                .thenReturn(new AgentTaskResponse("run-1", "ses-1", "opencode", true));
+        when(baInterviewAppService.runInterviewTurn(project.getId(), "补充个信息"))
+                .thenReturn(new ProjectAgentTaskResponse("run-1", "ba-" + project.getId(),
+                        "agentscope", RolePreset.BA, "需求分析师",
+                        ProjectMainChain.STAGE_BA, true));
 
         ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
-                new ProjectAgentTaskCommand("梳理需求", null));
+                new ProjectAgentTaskCommand("补充个信息", null));
 
         assertThat(response.role()).isEqualTo(RolePreset.BA);
-        assertThat(response.roleName()).isEqualTo("需求分析师");
-        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_BA);
         assertThat(response.runId()).isEqualTo("run-1");
+        assertThat(response.engine()).isEqualTo("agentscope");
         assertThat(response.accepted()).isTrue();
+        verify(baInterviewAppService).runInterviewTurn(project.getId(), "补充个信息");
+        verifyNoInteractions(agentTaskAppService, knowledgePort, streamAppService);
+    }
 
-        // 下发命令：BA 角色卡入参 + 引擎随项目；编排上下文：业务 runId + 计量归属 + projectId 关联
-        ArgumentCaptor<AgentTaskDispatchCommand> command =
-                ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
-        ArgumentCaptor<AgentRunContext> runContext = ArgumentCaptor.forClass(AgentRunContext.class);
-        verify(agentTaskAppService).dispatch(eq(project.getWorkspaceId().toString()),
-                command.capture(), runContext.capture());
-        assertThat(command.getValue().systemPrompt()).isEqualTo(RolePreset.BA.systemPrompt());
-        assertThat(command.getValue().modelId()).isEqualTo(RolePreset.BA.modelId());
-        assertThat(command.getValue().engine()).isEqualTo("opencode");
-        assertThat(runContext.getValue().runId()).isNotBlank();
+    @Test
+    void given_explicit_ba_role_when_dispatch_then_routed_to_interview_regardless_of_stage() {
+        // 显式 BA（任意阶段，如催促收敛「直接出 PRD」）同走对话轨道续会话
+        Project project = persistedProject("opencode");
+        persistedIteration(project, ProjectMainChain.STAGE_DEV);
 
-        // role-assigned 先于 run 下发发射（帧序 role-assigned → task-start → …；runId 与编排上下文同值）
-        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
-        verify(streamAppService).publish(eq(AgentEventTypes.ROLE_ASSIGNED), payload.capture());
-        assertThat(payload.getValue()).containsEntry("projectId", project.getId().toString())
-                .containsEntry("runId", runContext.getValue().runId())
-                .containsEntry("role", "BA")
-                .containsEntry("stage", ProjectMainChain.STAGE_BA)
-                .containsEntry("engine", "opencode");
-        assertThat(runContext.getValue().usageContext().subject())
-                .isEqualTo(project.getId().toString());
-        // 计量维度（A6 §3）：role + stage + iterationId（OPEN 期 run 发起时快照）
-        assertThat(runContext.getValue().usageContext().dims())
-                .containsEntry("role", "BA").containsEntry("stage", ProjectMainChain.STAGE_BA)
-                .containsEntry("iterationId", openIteration(project).getId().toString());
-        assertThat(runContext.getValue().streamCorrelation())
-                .containsEntry("projectId", project.getId().toString());
+        appService.dispatchTask(project.getId(),
+                new ProjectAgentTaskCommand("别问了，直接出 PRD", RolePreset.BA));
 
-        // 接受即计数：BA 段计数 0 → 1（门禁输入）
-        assertThat(openIteration(project).getStageTaskCount()).isEqualTo(1);
+        verify(baInterviewAppService).runInterviewTurn(project.getId(), "别问了，直接出 PRD");
+        verifyNoInteractions(agentTaskAppService);
     }
 
     @Test
@@ -147,10 +138,26 @@ class ProjectAgentTaskAppServiceTest {
         assertThat(response.roleName()).isEqualTo("开发工程师");
         ArgumentCaptor<AgentTaskDispatchCommand> command =
                 ArgumentCaptor.forClass(AgentTaskDispatchCommand.class);
-        verify(agentTaskAppService).dispatch(anyString(), command.capture(), any());
+        ArgumentCaptor<AgentRunContext> runContext = ArgumentCaptor.forClass(AgentRunContext.class);
+        verify(agentTaskAppService).dispatch(anyString(), command.capture(), runContext.capture());
         assertThat(command.getValue().systemPrompt()).isEqualTo(RolePreset.DEV.systemPrompt());
         assertThat(command.getValue().modelId()).isEqualTo(RolePreset.DEV.modelId());
         assertThat(command.getValue().engine()).isEqualTo("dsh");
+        assertThat(runContext.getValue().usageContext().subject())
+                .isEqualTo(project.getId().toString());
+        // 计量维度（A6 §3）：role + stage + iterationId（OPEN 期 run 发起时快照）
+        assertThat(runContext.getValue().usageContext().dims())
+                .containsEntry("role", "DEV").containsEntry("stage", ProjectMainChain.STAGE_BA)
+                .containsEntry("iterationId", openIteration(project).getId().toString());
+
+        // role-assigned 先于 run 下发发射（帧序 role-assigned → task-start → …；引擎路径）
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(streamAppService).publish(eq(AgentEventTypes.ROLE_ASSIGNED), payload.capture());
+        assertThat(payload.getValue()).containsEntry("projectId", project.getId().toString())
+                .containsEntry("runId", runContext.getValue().runId())
+                .containsEntry("role", "DEV")
+                .containsEntry("stage", ProjectMainChain.STAGE_BA)
+                .containsEntry("engine", "dsh");
         assertThat(openIteration(project).getStageTaskCount()).isEqualTo(1);
     }
 
@@ -195,12 +202,12 @@ class ProjectAgentTaskAppServiceTest {
     @Test
     void given_rejected_run_when_dispatch_then_not_counted() {
         Project project = persistedProject("opencode");
-        persistedIteration(project, ProjectMainChain.STAGE_BA);
+        persistedIteration(project, ProjectMainChain.STAGE_DEV);
         when(agentTaskAppService.dispatch(anyString(), any(), any()))
                 .thenReturn(new AgentTaskResponse("run-4", null, "opencode", false));
 
         ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
-                new ProjectAgentTaskCommand("梳理需求", null));
+                new ProjectAgentTaskCommand("开发登录页", RolePreset.DEV));
 
         assertThat(response.accepted()).isFalse();
         assertThat(openIteration(project).getStageTaskCount()).isZero();
@@ -355,7 +362,7 @@ class ProjectAgentTaskAppServiceTest {
                 new KnowledgeHit("QA", "第一单", "用哪个框架?", "问：用哪个框架?\n答：React"),
                 new KnowledgeHit("BUG", "第一单", "登录 500", "【标题】登录 500")));
 
-        appService.dispatchTask(project.getId(), new ProjectAgentTaskCommand("梳理电商需求", null));
+        appService.dispatchTask(project.getId(), new ProjectAgentTaskCommand("梳理电商需求", RolePreset.DEV));
 
         // 检索 query = 任务 prompt 全文、topK = 配置默认（5）
         verify(knowledgePort).retrieve("梳理电商需求", 5);
@@ -399,7 +406,8 @@ class ProjectAgentTaskAppServiceTest {
                 .thenReturn(new AgentTaskResponse("run-k2", "ses-k2", "opencode", true));
         when(knowledgePort.retrieve(anyString(), eq(5))).thenReturn(List.of());
 
-        appService.dispatchTask(project.getId(), new ProjectAgentTaskCommand("梳理需求", null));
+        appService.dispatchTask(project.getId(),
+                new ProjectAgentTaskCommand("梳理需求", RolePreset.DEV));
 
         // 空命中：原 prompt 照发、不发 knowledge-retrieved（role-assigned 照发）
         ArgumentCaptor<AgentTaskDispatchCommand> command =
@@ -420,7 +428,7 @@ class ProjectAgentTaskAppServiceTest {
                 .thenThrow(new RuntimeException("embedding 服务不可用"));
 
         ProjectAgentTaskResponse response = appService.dispatchTask(project.getId(),
-                new ProjectAgentTaskCommand("梳理需求", null));
+                new ProjectAgentTaskCommand("梳理需求", RolePreset.DEV));
 
         // 检索降级为空注入（A5 §3）：run 照常下发，计数照常
         ArgumentCaptor<AgentTaskDispatchCommand> command =

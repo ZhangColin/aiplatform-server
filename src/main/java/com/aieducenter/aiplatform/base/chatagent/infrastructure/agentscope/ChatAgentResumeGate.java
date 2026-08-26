@@ -49,8 +49,8 @@ public class ChatAgentResumeGate implements DisposableBean {
         this.submitter = this.ownedExecutor::submit;
     }
 
-    /** 测试便利构造（直通执行器，无生命周期）。 */
-    ChatAgentResumeGate(java.util.concurrent.Executor executor) {
+    /** 测试便利构造（直通执行器，无生命周期；public 供跨包测试装配，如 AppService 单测）。 */
+    public ChatAgentResumeGate(java.util.concurrent.Executor executor) {
         this.ownedExecutor = null;
         this.submitter = task -> {
             executor.execute(task);

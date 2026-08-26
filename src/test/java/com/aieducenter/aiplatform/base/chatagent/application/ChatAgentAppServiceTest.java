@@ -19,8 +19,11 @@ import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentCommand;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentReply;
 import com.aieducenter.aiplatform.base.chatagent.domain.port.ChatAgentClient;
+import com.aieducenter.aiplatform.base.chatagent.domain.error.ChatAgentMessage;
 import com.aieducenter.aiplatform.base.chatagent.infrastructure.ChatAgentWorkspaceClient;
+import com.aieducenter.aiplatform.base.chatagent.infrastructure.agentscope.ChatAgentResumeGate;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
+import com.cartisan.core.exception.DomainException;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceId;
 import java.util.List;
 import java.util.Map;
@@ -58,8 +61,13 @@ class ChatAgentAppServiceTest {
     private ArgumentCaptor<Map<String, Object>> payloadCaptor;
 
     private ChatAgentAppService appService() {
+        // 同步路径不走闸；直通闸占位满足构造（#40 异步入口同用：提交即执行）
         return new ChatAgentAppService(chatAgentClient, streamAppService, waitAppService,
-                workspaceClient);
+                workspaceClient, directGate());
+    }
+
+    private static ChatAgentResumeGate directGate() {
+        return new ChatAgentResumeGate(Runnable::run);
     }
 
     @Test
@@ -129,6 +137,40 @@ class ChatAgentAppServiceTest {
         assertThatCode(() -> sinkCaptor.getValue().accept(
                 new AgentEvent(AgentEventTypes.TASK_START, Map.of("runId", "run-3"))))
                 .doesNotThrowAnyException();
+    }
+
+    // ---------- #40：异步轮入口（编排层快返回 + 会话串行） ----------
+
+    @Test
+    void given_closed_gate_when_converse_async_then_new_run_reopens_and_runs() {
+        // deny cap 关闸后用户开新一轮对话（新 run 承接会话）即复活——闸语义（#48）
+        ChatAgentResumeGate gate = directGate();
+        ChatAgentCommand command = new ChatAgentCommand("run-a", "继续聊", null, null,
+                "s-a", "alice", null, null, Map.of());
+        when(chatAgentClient.converse(eq(command), any()))
+                .thenReturn(new ChatAgentReply("run-a", "好的"));
+        ChatAgentAppService appService = new ChatAgentAppService(chatAgentClient,
+                streamAppService, waitAppService, workspaceClient, gate);
+        gate.close("s-a");
+
+        appService.converseAsync(command);
+
+        // 提交前先复活（client 内部的复活在排队任务里才跑——来不及），轮照常执行
+        verify(chatAgentClient).converse(eq(command), any());
+    }
+
+    @Test
+    void given_converse_failure_when_converse_async_then_not_propagated() {
+        // 异步轮失败不炸编排调用方：error 帧已进流桥（client 内），异常由闸吞掉记日志
+        ChatAgentCommand command = new ChatAgentCommand("run-b", "再问一轮", null, null,
+                "s-b", "alice", null, null, Map.of());
+        when(chatAgentClient.converse(eq(command), any()))
+                .thenThrow(new DomainException(ChatAgentMessage.CONVERSE_FAILED, "模型超时"));
+        ChatAgentAppService appService = new ChatAgentAppService(chatAgentClient,
+                streamAppService, waitAppService, workspaceClient, directGate());
+
+        assertThatCode(() -> appService.converseAsync(command)).doesNotThrowAnyException();
+        verify(chatAgentClient).converse(eq(command), any());
     }
 
     // ---------- #48：等待点双向桥（流桥拦截） ----------

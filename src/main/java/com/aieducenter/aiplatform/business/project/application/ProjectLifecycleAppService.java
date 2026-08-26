@@ -16,7 +16,6 @@ import com.aieducenter.aiplatform.base.workspace.application.dto.response.Worksp
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
 import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
-import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
@@ -34,8 +33,8 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * 项目生命周期用例（demo ProjectController.create/delete 的重写）：建项目 =
  * 工作区副作用先行落定 → 一事务建 Project + 第 1 期（seq=1 OPEN，起始 BA）→
- * SSE 通知（workspace-created + stage-changed）→ 前缀段自动跑 BA（A3 §2.3
- * 「建项目即自动跑 BA（对话展开）」，编排对主链前缀的固定行为）。
+ * SSE 通知（workspace-created + stage-changed）→ 前缀段自动开 BA 访谈（A3 §2.3
+ * 「建项目即自动跑 BA（对话展开）」，编排对主链前缀的固定行为；#40 起走对话轨道）。
  *
  * <p>事务形态（照片1b workspace 的形态）：Docker 副作用在业务事务外先行，库记录
  * 收进短事务；落库失败回收已落定的工作区不留孤儿容器。删除真删级联（A3 §4）：
@@ -49,7 +48,7 @@ import lombok.extern.slf4j.Slf4j;
 public class ProjectLifecycleAppService {
 
     private final WorkspaceLifecycleAppService workspaceLifecycleAppService;
-    private final ProjectAgentTaskAppService agentTaskAppService;
+    private final BaInterviewAppService baInterviewAppService;
     private final AgentEngineRegistry engineRegistry;
     private final ProjectRepository projectRepository;
     private final IterationRepository iterationRepository;
@@ -59,7 +58,7 @@ public class ProjectLifecycleAppService {
     private final TransactionTemplate transactionTemplate;
 
     public ProjectLifecycleAppService(WorkspaceLifecycleAppService workspaceLifecycleAppService,
-                                      ProjectAgentTaskAppService agentTaskAppService,
+                                      BaInterviewAppService baInterviewAppService,
                                       AgentEngineRegistry engineRegistry,
                                       ProjectRepository projectRepository,
                                       IterationRepository iterationRepository,
@@ -68,7 +67,7 @@ public class ProjectLifecycleAppService {
                                       ProjectKnowledgeAppService knowledgeAppService,
                                       TransactionTemplate transactionTemplate) {
         this.workspaceLifecycleAppService = workspaceLifecycleAppService;
-        this.agentTaskAppService = agentTaskAppService;
+        this.baInterviewAppService = baInterviewAppService;
         this.engineRegistry = engineRegistry;
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
@@ -80,7 +79,8 @@ public class ProjectLifecycleAppService {
 
     /**
      * 建项目（选引擎）：引擎校验先行（无 Docker 副作用）→ dev 工作区落定 →
-     * 一事务 Project + 第 1 期（BA/OPEN/计数 0）→ SSE 双通知 → 自动跑 BA。
+     * 一事务 Project + 第 1 期（BA/OPEN/计数 0）→ SSE 双通知 → 自动开始 BA 访谈
+     * （#40 对话轨道，经 {@link BaInterviewAppService}）。
      * BA 起跑失败不回滚建项目（项目已成立，失败原因经 error 事件/日志表达）。
      */
     public ProjectCreatedResponse create(CreateProjectCommand command) {
@@ -113,13 +113,13 @@ public class ProjectLifecycleAppService {
                 ProjectEventTypes.ENGINE_FIELD, project.getEngine()));
         emitStageChanged(project.getId(), ProjectMainChain.firstStage());
 
-        // 前缀段自动：建项目即跑 BA（对话展开；初始描述即首条任务内容）
+        // 前缀段自动：建项目即开始 BA 访谈（#40 对话轨道：欢迎语 + 首个澄清问题挂
+        // QUESTION 等待点经 SSE 触达；初始描述即开场输入）
         String prompt = command.requirement() == null || command.requirement().isBlank()
                 ? RolePreset.DEFAULT_KICKOFF_PROMPT : command.requirement();
         ProjectAgentTaskResponse run;
         try {
-            run = agentTaskAppService.dispatchTask(project.getId(),
-                    new ProjectAgentTaskCommand(prompt, RolePreset.BA));
+            run = baInterviewAppService.runInterviewTurn(project.getId(), prompt);
         } catch (RuntimeException e) {
             log.warn("项目 {} 自动 BA 起跑失败（项目已成立，不回滚）", project.getId(), e);
             return new ProjectCreatedResponse(queryAppService.detail(project.getId()), null, false);

@@ -3,6 +3,7 @@ package com.aieducenter.aiplatform.base.chatagent.application;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import org.springframework.stereotype.Service;
 
@@ -15,6 +16,7 @@ import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentCommand;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentReply;
 import com.aieducenter.aiplatform.base.chatagent.domain.port.ChatAgentClient;
 import com.aieducenter.aiplatform.base.chatagent.infrastructure.ChatAgentWorkspaceClient;
+import com.aieducenter.aiplatform.base.chatagent.infrastructure.agentscope.ChatAgentResumeGate;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -40,18 +42,24 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ChatAgentAppService {
 
+    /** 对话智能体的引擎自述名（UsageEvent.engine / role-assigned 双轨标识；正本在此，
+     *  {@code ChatAgentSessionRecorder} 反向引用——业务层经应用层取用，不进 infra）。 */
+    public static final String ENGINE = "agentscope";
+
     private final ChatAgentClient chatAgentClient;
     private final AgentStreamAppService streamAppService;
     private final AgentWaitAppService waitAppService;
     private final ChatAgentWorkspaceClient workspaceClient;
+    private final ChatAgentResumeGate resumeGate;
 
     public ChatAgentAppService(ChatAgentClient chatAgentClient,
             AgentStreamAppService streamAppService, AgentWaitAppService waitAppService,
-            ChatAgentWorkspaceClient workspaceClient) {
+            ChatAgentWorkspaceClient workspaceClient, ChatAgentResumeGate resumeGate) {
         this.chatAgentClient = chatAgentClient;
         this.streamAppService = streamAppService;
         this.waitAppService = waitAppService;
         this.workspaceClient = workspaceClient;
+        this.resumeGate = resumeGate;
     }
 
     /**
@@ -62,6 +70,41 @@ public class ChatAgentAppService {
     public ChatAgentReply converse(ChatAgentCommand command) {
         return chatAgentClient.converse(command,
                 sink(command.workspaceId(), command.streamCorrelation()));
+    }
+
+    /**
+     * 异步跑一轮对话（#40 BA 访谈编排入口）：提交 {@link ChatAgentResumeGate} 串行
+     * 执行后即返回（REST 快返回，过程帧经流桥进 SSE；失败经 error 帧表达，异常由
+     * 闸吞掉记日志）。与 settle 续跑共闸——单会话一次一轮（新轮与续跑并发会互踩
+     * 同一 (userId, sessionId) 状态槽位）；提交前先复活闸（新 run 承接会话即复活，
+     * client 内部的复活在排队任务里才执行——来不及救被关闸挡掉的提交）。返回是否
+     * 提交成功（复活后与关闸竞态的极端窗口才会 false——「被拒的 run 没有创建事实」
+     * 归调用方口径）。
+     */
+    public boolean converseAsync(ChatAgentCommand command) {
+        return converseAsync(command, null);
+    }
+
+    /**
+     * 带轮闸的异步轮（#40 访谈化解路由的执行时复核）：排到的执行时刻先过
+     * {@code turnGuard}——false 表示本轮已被更新的事实取代（如前序续跑刚挂起新
+     * 提问、调用方已把本轮文本按答复 settle），跳过对话。提交时与执行时之间会话
+     * 状态可能前移（串行闸只保证不并发，不保证快照不老），在悬提问化解这类
+     * 「执行一刻才知道能不能开轮」的编排靠本缝兜竞态窗口。
+     */
+    public boolean converseAsync(ChatAgentCommand command,
+            Predicate<ChatAgentCommand> turnGuard) {
+        resumeGate.reopen(command.sessionId());
+        boolean submitted = resumeGate.submit(command.sessionId(), () -> {
+            if (turnGuard == null || turnGuard.test(command)) {
+                converse(command);
+            }
+        });
+        if (!submitted) {
+            log.warn("[chatagent] 异步轮提交被拒（session={}，复活后与关闸竞态），丢弃本轮",
+                    command.sessionId());
+        }
+        return submitted;
     }
 
     /** 流桥 sink：带 workspaceId 时拦截 wait-raised 落库与终态联动（见类注释）。 */

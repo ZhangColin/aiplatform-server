@@ -36,6 +36,9 @@ public class AskUserTool extends ToolBase {
                                 "question", Map.of(
                                         "type", "string",
                                         "description", "要问用户的问题"),
+                                "header", Map.of(
+                                        "type", "string",
+                                        "description", "问题主题短标签（如「目标用户」，呈现于问答卡）"),
                                 "options", Map.of(
                                         "type", "array",
                                         "items", Map.of("type", "string"),

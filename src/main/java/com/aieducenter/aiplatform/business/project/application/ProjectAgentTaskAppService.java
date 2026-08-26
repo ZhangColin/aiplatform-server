@@ -72,6 +72,7 @@ public class ProjectAgentTaskAppService {
     private final AgentStreamAppService streamAppService;
     private final PlatformNotificationAppService notificationAppService;
     private final ProjectKnowledgeAppService knowledgeAppService;
+    private final BaInterviewAppService baInterviewAppService;
     private final TransactionTemplate transactionTemplate;
 
     public ProjectAgentTaskAppService(ProjectRepository projectRepository,
@@ -80,6 +81,7 @@ public class ProjectAgentTaskAppService {
                                       AgentStreamAppService streamAppService,
                                       PlatformNotificationAppService notificationAppService,
                                       ProjectKnowledgeAppService knowledgeAppService,
+                                      BaInterviewAppService baInterviewAppService,
                                       TransactionTemplate transactionTemplate) {
         this.projectRepository = projectRepository;
         this.iterationRepository = iterationRepository;
@@ -87,12 +89,17 @@ public class ProjectAgentTaskAppService {
         this.streamAppService = streamAppService;
         this.notificationAppService = notificationAppService;
         this.knowledgeAppService = knowledgeAppService;
+        this.baInterviewAppService = baInterviewAppService;
         this.transactionTemplate = transactionTemplate;
     }
 
     /**
-     * 下发项目任务（手动 DEV/ARCH 或前缀段自动 BA/DEMO）：run 被引擎接受即计入
+     * 下发项目任务（手动 DEV/ARCH 或前缀段自动 DEMO）：run 被引擎接受即计入
      * 当前阶段计数（门禁输入）。期已收口不计数（工具与过程正交，任务照常跑）。
+     *
+     * <p>#40 双轨分野：解析出的角色是 BA（显式或阶段默认——BA 段自由补充）时改走
+     * 对话轨道（{@link BaInterviewAppService} 续 BA 会话，催促收敛经此进上下文），
+     * 引擎零交互；其余角色（DEV/TEST/DEMO/ARCH/DELIVERY）照旧走编码引擎。</p>
      */
     public ProjectAgentTaskResponse dispatchTask(Long projectId, ProjectAgentTaskCommand command) {
         Project project = requireProject(projectId);
@@ -102,6 +109,10 @@ public class ProjectAgentTaskAppService {
         RolePreset role = resolveRole(command.role(), openIteration);
         String stage = openIteration != null ? openIteration.getStage()
                 : ProjectMainChain.STAGE_CLOSED;
+
+        if (role == RolePreset.BA) {
+            return baInterviewAppService.runInterviewTurn(projectId, command.prompt());
+        }
 
         String runId = AgentRunContext.newRunId();
         emitRoleAssigned(projectId, runId, role, stage, project.getEngine());

@@ -60,6 +60,7 @@ BA 等对话型角色的运行形态：平台进程内的 AgentScope HarnessAgen
 **工作区桥（Workspace Bridge）**：对话智能体的 workspace 锚定两形态——本地兜底（配置路径）与项目 dev 工作区（workspaceId 解析为 dev 容器，文件操作经 docker exec 落容器 `/workspace`，与编码引擎同视图，写入即进源码包，#45）。
 **等待点双向桥（Wait Bridge）**：对话智能体挂起（权限确认/向用户提问）与平台等待点的双向通道——挂起 → `wait-raised` 落既有等待点（settle 即续跑），settle 三型答复 → ConfirmResult 重建续跑；deny cap / run 终态联动等平台守卫同口径生效（#48）。
 **会话恢复（Session Recovery）**：对话智能体的 AgentState 落 PostgreSQL（(userId, sessionId) 槽位）+ 会话行表判定——平台重启后按会话标识恢复续跑，访谈上下文不丢（#48）。
+**BA 会话绑定（BA Session Binding）**：projectId → BA 会话的无表派生（sessionId=`ba-{projectId}`，userId=项目 owner）——建项目即访谈、答卡 settle 续跑、对话自由补充都续这一条会话，上下文不劈叉（#40）。自由补充遇在悬问答时输入即答复（settle 化解，锚回原 run 不开新轮）。
 _Avoid_: 与开发智能体/编码引擎概念混用（两类运行时、两套适配，不共享会话与引擎配置）；对话智能体的「会话」与编码引擎会话（agt_agent_sessions）混用（会话恢复归 #48 另接线）
 
 **中间件资源（Middleware Resource）**：

@@ -1,5 +1,7 @@
 package com.aieducenter.aiplatform.base.agentengine.application;
 
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.stereotype.Service;
@@ -33,5 +35,18 @@ public class AgentWaitQueryAppService {
         return waitRepository
                 .findBySessionIdAndEngineRefAndStatus(sessionId, engineRef, WaitStatus.PENDING)
                 .map(WaitPointResponse::from);
+    }
+
+    /**
+     * 会话的 PENDING 等待点（新→旧；#40 对话编排的「在悬提问化解」路由输入——
+     * 对话轮到来时若会话还有在悬问答，自由补充按答复 settle 而非开新轮）。
+     */
+    @Transactional(readOnly = true)
+    public List<WaitPointResponse> pendingOfSession(String sessionId) {
+        return waitRepository.findBySessionIdAndStatus(sessionId, WaitStatus.PENDING).stream()
+                .map(WaitPointResponse::from)
+                .sorted(Comparator.comparing(WaitPointResponse::raisedAt,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
     }
 }

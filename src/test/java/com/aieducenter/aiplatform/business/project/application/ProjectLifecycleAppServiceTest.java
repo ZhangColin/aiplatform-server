@@ -26,7 +26,6 @@ import com.aieducenter.aiplatform.base.workspace.application.dto.command.CreateW
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.WorkspaceResponse;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
 import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
-import com.aieducenter.aiplatform.business.project.application.dto.command.ProjectAgentTaskCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
@@ -78,7 +77,7 @@ class ProjectLifecycleAppServiceTest {
     private WorkspaceLifecycleAppService workspaceLifecycleAppService;
 
     @MockitoBean
-    private ProjectAgentTaskAppService agentTaskAppService;
+    private BaInterviewAppService baInterviewAppService;
 
     @MockitoBean
     private PlatformNotificationAppService notificationAppService;
@@ -97,9 +96,7 @@ class ProjectLifecycleAppServiceTest {
     void given_request_context_when_create_then_owner_account_id_filled() throws Exception {
         // A2 §3 归属列：创建时填 RequestContext.userId（=accountId），v1 读路径不过滤
         stubWorkspace("9101", "aiplatform-dev-101");
-        when(agentTaskAppService.dispatchTask(any(), any())).thenReturn(
-                new ProjectAgentTaskResponse("run-1", "ses-1", "opencode", RolePreset.BA,
-                        "需求分析师", ProjectMainChain.STAGE_BA, true));
+        stubInterviewAccepted("run-1");
 
         ProjectCreatedResponse response = RequestContext.runFor(
                 new RequestContext(null, null, null, null, 3897654321098765432L,
@@ -115,9 +112,7 @@ class ProjectLifecycleAppServiceTest {
     @Test
     void given_valid_command_when_create_then_workspace_iteration_sse_and_auto_ba() {
         stubWorkspace("9100", "aiplatform-dev-100");
-        when(agentTaskAppService.dispatchTask(any(), any())).thenReturn(
-                new ProjectAgentTaskResponse("run-1", "ses-1", "opencode", RolePreset.BA,
-                        "需求分析师", ProjectMainChain.STAGE_BA, true));
+        stubInterviewAccepted("run-1");
 
         ProjectCreatedResponse response = appService.create(
                 new CreateProjectCommand("官网 demo", null, "opencode", "做一个官网"));
@@ -160,26 +155,22 @@ class ProjectLifecycleAppServiceTest {
                 .containsEntry("stage", ProjectMainChain.STAGE_BA)
                 .containsEntry("stageLabel", "需求梳理");
 
-        // 前缀段自动：BA 角色任务（初始描述即首条任务内容）
-        verify(agentTaskAppService).dispatchTask(projectId,
-                new ProjectAgentTaskCommand("做一个官网", RolePreset.BA));
+        // 前缀段自动：BA 访谈开场（#40 对话轨道；初始描述即首条对话输入）
+        verify(baInterviewAppService).runInterviewTurn(projectId, "做一个官网");
     }
 
     @Test
     void given_blank_requirement_when_create_then_default_kickoff_prompt() {
         stubWorkspace("9101", "aiplatform-dev-101");
-        when(agentTaskAppService.dispatchTask(any(), any())).thenReturn(
-                new ProjectAgentTaskResponse("run-2", "ses-2", "opencode", RolePreset.BA,
-                        "需求分析师", ProjectMainChain.STAGE_BA, true));
+        stubInterviewAccepted("run-2");
 
         ProjectCreatedResponse response = appService.create(
                 new CreateProjectCommand("商城", ProjectType.ECOMMERCE, "dsh", " "));
 
         assertThat(response.project().type()).isEqualTo(ProjectType.ECOMMERCE);
         // 空需求描述 → 缺省开场提示（对话展开起点）
-        verify(agentTaskAppService).dispatchTask(Long.parseLong(response.project().id()),
-                new ProjectAgentTaskCommand(RolePreset.DEFAULT_KICKOFF_PROMPT,
-                        RolePreset.BA));
+        verify(baInterviewAppService).runInterviewTurn(
+                Long.parseLong(response.project().id()), RolePreset.DEFAULT_KICKOFF_PROMPT);
     }
 
     @Test
@@ -197,8 +188,8 @@ class ProjectLifecycleAppServiceTest {
     @Test
     void given_auto_ba_failure_when_create_then_project_kept_and_not_accepted() {
         stubWorkspace("9102", "aiplatform-dev-102");
-        when(agentTaskAppService.dispatchTask(any(), any()))
-                .thenThrow(new RuntimeException("引擎不可用"));
+        when(baInterviewAppService.runInterviewTurn(any(), any()))
+                .thenThrow(new RuntimeException("对话智能体不可用"));
 
         ProjectCreatedResponse response = appService.create(
                 new CreateProjectCommand("官网 demo", null, "opencode", null));
@@ -316,6 +307,15 @@ class ProjectLifecycleAppServiceTest {
     }
 
     // ---------- 测试数据 ----------
+
+    /** BA 访谈编排桩（#40）：接受即回 runId（编排细节见 BaInterviewAppServiceTest）。 */
+    private void stubInterviewAccepted(String runId) {
+        when(baInterviewAppService.runInterviewTurn(any(), any())).thenAnswer(invocation -> {
+            Long projectId = invocation.getArgument(0);
+            return new ProjectAgentTaskResponse(runId, "ba-" + projectId, "agentscope",
+                    RolePreset.BA, "需求分析师", ProjectMainChain.STAGE_BA, true);
+        });
+    }
 
     private void stubWorkspace(String workspaceId, String containerName) {
         when(workspaceLifecycleAppService.create(any())).thenReturn(new WorkspaceResponse(
