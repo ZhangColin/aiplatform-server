@@ -34,8 +34,9 @@ import lombok.extern.slf4j.Slf4j;
  * 落 {@code prj_confirmations}（approve 也留痕，account_id 第一天记 approver）。
  *
  * <p>门禁分层（A3 §2.4）：引擎管计数（{@link StageAdvanceService}，minTasks 按门），
- * 编排管业务谓词（G3 = 无未关闭 Bug，经 {@link OpenBugQueryPort}——实现随 #26 提供，
- * 本片缝上默认无 Bug）；不满足 409 {@code PRJ_}。无门段（开发）无确认动作——
+ * 编排管业务谓词（G1 = PRD 已产出，查项目状态位不查文件系统，#49；G3 = 无未关闭
+ * Bug，经 {@link OpenBugQueryPort}——实现随 #26 提供，本片缝上默认无 Bug）；
+ * 不满足 409 {@code PRJ_}。无门段（开发）无确认动作——
  * 推进归编排触发（首个测试任务，{@link ProjectAgentTaskAppService}）。G1 通过自动跑
  * Demo（A3 §2.3 前缀段自动）；G4 通过即收口（期 CLOSED，无交付段）。</p>
  *
@@ -84,22 +85,27 @@ public class ProjectGateAppService {
      * SSE stage-changed(approved)；G1（需求确认）通过自动跑 Demo。
      *
      * @throws ApplicationException PRJ_001 项目不存在；PRJ_009 当前阶段无确认门；
+     *                              PRJ_016 G1 谓词不满足（PRD 未产出）；
      *                              PRJ_008 G3 谓词不满足（存在未关闭 Bug）；
      *                              PRJ_007 计数门禁不足；PRJ_010 无 OPEN 期
      */
     public ProjectDetailResponse approve(Long projectId) {
-        requireProject(projectId);
+        Project project = requireProject(projectId);
         Iteration iteration = openIterationOf(projectId);
         StageEntry current = stageOf(iteration.getStage());
         requireGateOf(current);
 
-        // 引擎计数门禁先行（内存裁决）；业务谓词后查（A3 §2.4 编排半边）：开发完成
-        // 确认（actor=开发平台）= 无未关闭 Bug——查询端口实现随 #26 提供，本片默认
-        // 无 Bug，缝在、行为等同放行。
+        // 引擎计数门禁先行（内存裁决）；业务谓词后查（A3 §2.4 编排半边，与 gateView
+        // 就绪同口径）：需求确认（G1）= PRD 已产出（查项目状态位不查文件系统，#49——
+        // 计数门禁并行保留）；开发完成确认（G3，actor=开发平台）= 无未关闭 Bug。
         AdvanceResult result = stageAdvanceService.advance(ProjectMainChain.definition(),
                 iteration.getStage(), iteration.getStageTaskCount());
         if (result instanceof AdvanceResult.GateBlocked) {
             throw new ApplicationException(ProjectMessage.GATE_TASKS_INSUFFICIENT);
+        }
+        if (ProjectMainChain.STAGE_BA.equals(current.name())
+                && project.getPrdProducedAt() == null) {
+            throw new ApplicationException(ProjectMessage.GATE_PRD_NOT_PRODUCED);
         }
         if (ProjectMainChain.GATE_ACTOR_PLATFORM.equals(current.exitGate().actor())
                 && openBugQueryPort.hasOpenBugs(projectId)) {

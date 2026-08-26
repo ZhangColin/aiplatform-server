@@ -46,8 +46,9 @@ import lombok.extern.slf4j.Slf4j;
  * 计量（role=BA 维度，engine=agentscope）与 role-assigned 帧序
  * （engine=agentscope，后续 task-start 由对话流自发）与引擎任务面同构。</p>
  *
- * <p><b>阶段计数</b>：提交即计入当前阶段任务数——G1 计数门（taskCount≥1）在 #49
- * 换「PRD 已产出」谓词前不塌；无 OPEN 期（期后场景）不计数，访谈照常可谈
+ * <p><b>阶段计数</b>：提交即计入当前阶段任务数——计数门禁（taskCount≥1）与
+ * 「PRD 已产出」谓词并行（#49 起 G1 = 计数 ∧ 谓词，计数照记不拆）；无 OPEN 期
+ * （期后场景）不计数，访谈照常可谈
  * （工具与过程正交）。不做知识检索注入：访谈是对话上下文不是 run prompt
  * （引擎路径 A5 §3 注入口径不动）。</p>
  */
@@ -95,8 +96,8 @@ public class BaInterviewAppService {
      * wait-settled + QA 摄取与答卡 REST 同口径）。两段：提交时查一次（常见路径，
      * 锚回正确 runId）；执行前在闸内再复核一次（前序续跑可能刚挂起新提问——提交
      * 时快照已老，复核兜住竞态窗口，本轮静默折入原 run；响应已回新 runId 但其无帧
-     * ——projectId 锚订阅不受影响，且该竞态窗多计一次阶段任务只会放宽计数门，
-     * #49 换「PRD 已产出」谓词后此口径整体消解）。</p>
+     * ——projectId 锚订阅不受影响，且该竞态窗多计一次阶段任务只会放宽计数门
+     * （G1 主门禁已是「PRD 已产出」谓词，#49）。</p>
      *
      * @throws ApplicationException PRJ_001 项目不存在
      */

@@ -111,8 +111,9 @@ public class ProjectController {
     @PostMapping("/{id}/stage/approve")
     @Operation(summary = "门通过（推进；验收门通过即收口）",
             description = "无体——拍板即全部事实（approve 也留痕 prj_confirmations，含 accountId）。"
-                    + "门禁 = 引擎计数（每门 taskCount≥1，验收门=0）∧ 业务谓词（开发完成确认 = "
-                    + "无未关闭 Bug），不足 409 PRJ_007/PRJ_008；无门段 409 PRJ_009；无 OPEN 期 409 PRJ_010。"
+                    + "门禁 = 引擎计数（每门 taskCount≥1，验收门=0）∧ 业务谓词（需求确认 = "
+                    + "PRD 已产出，开发完成确认 = 无未关闭 Bug），不足 409 "
+                    + "PRJ_007/PRJ_008/PRJ_016；无门段 409 PRJ_009；无 OPEN 期 409 PRJ_010。"
                     + "需求确认（G1）通过自动跑 Demo；验收（G4）通过即收口：期 CLOSED、项目已交付。"
                     + "SSE：stage-changed(approved=true)")
     public ApiResponse<ProjectDetailResponse> approve(@PathVariable String id) {

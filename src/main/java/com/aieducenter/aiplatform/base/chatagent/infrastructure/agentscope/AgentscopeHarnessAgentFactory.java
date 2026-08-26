@@ -1,6 +1,7 @@
 package com.aieducenter.aiplatform.base.chatagent.infrastructure.agentscope;
 
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentWorkspace;
+import com.aieducenter.aiplatform.base.chatagent.domain.port.PrdArtifactPort;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -11,9 +12,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * HarnessAgent 构建工厂（#44 建、#45 工作区分型、#48 状态落库）：agent 无状态
- * （per-session 靠 RuntimeContext 寻址），同规格（name + sysPrompt + model +
- * workspace）构建一次、进程内复用；容器关闭时统一释放（HarnessAgent 是
+ * HarnessAgent 构建工厂（#44 建、#45 工作区分型、#48 状态落库、#49 savePrd 工具）：
+ * agent 无状态（per-session 靠 RuntimeContext 寻址），同规格（name + sysPrompt +
+ * model + workspace）构建一次、进程内复用；容器关闭时统一释放（HarnessAgent 是
  * AutoCloseable）。
  *
  * <p>工作区两形态（{@link ChatAgentWorkspace}）：{@link ChatAgentWorkspace.Local Local}
@@ -45,15 +46,19 @@ public class AgentscopeHarnessAgentFactory implements DisposableBean {
     private final ConcurrentHashMap<String, HarnessAgent> agents = new ConcurrentHashMap<>();
     private final AgentBuilder builder;
     private final AgentStateStore stateStore;
+    private final PrdArtifactPort prdArtifactPort;
 
     @Autowired
-    public AgentscopeHarnessAgentFactory(AgentStateStore stateStore) {
-        this(stateStore, (name, sysPrompt, modelString, workspace) ->
-                buildAgent(stateStore, name, sysPrompt, modelString, workspace));
+    public AgentscopeHarnessAgentFactory(AgentStateStore stateStore,
+            PrdArtifactPort prdArtifactPort) {
+        this(stateStore, prdArtifactPort, (name, sysPrompt, modelString, workspace) ->
+                buildAgent(stateStore, prdArtifactPort, name, sysPrompt, modelString, workspace));
     }
 
-    AgentscopeHarnessAgentFactory(AgentStateStore stateStore, AgentBuilder builder) {
+    AgentscopeHarnessAgentFactory(AgentStateStore stateStore, PrdArtifactPort prdArtifactPort,
+            AgentBuilder builder) {
         this.stateStore = stateStore;
+        this.prdArtifactPort = prdArtifactPort;
         this.builder = builder;
     }
 
@@ -79,14 +84,15 @@ public class AgentscopeHarnessAgentFactory implements DisposableBean {
         agents.clear();
     }
 
-    private static HarnessAgent buildAgent(AgentStateStore stateStore, String name,
+    private static HarnessAgent buildAgent(AgentStateStore stateStore,
+            PrdArtifactPort prdArtifactPort, String name,
             String sysPrompt, String modelString, ChatAgentWorkspace workspace) {
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name(name)
                 .sysPrompt(sysPrompt)
                 .model(modelString)
                 .stateStore(stateStore)
-                .toolkit(interviewToolkit());
+                .toolkit(interviewToolkit(workspace, prdArtifactPort));
         switch (workspace) {
             case ChatAgentWorkspace.Local local -> {
                 if (local.root() != null) {
@@ -105,12 +111,19 @@ public class AgentscopeHarnessAgentFactory implements DisposableBean {
     }
 
     /**
-     * 访谈工具集（#48）：平台自有的对话智能体工具——ask_user（向用户提问挂起）。
-     * 工具无状态可共享；后续 BA 访谈工具（savePrd 等，#40）在此追加。
+     * 访谈工具集（#48 ask_user / #49 savePrd）：平台自有的对话智能体工具。
+     * ask_user 无状态可共享；savePrd 锚定项目（工作区 + 业务效果经
+     * {@link PrdArtifactPort}），仅项目 dev 工作区注册——本地兜底工作区无项目
+     * 语境，不注册即模型不可见（BA 经编排恒带 workspaceId，不受影响）。
      */
-    private static Toolkit interviewToolkit() {
+    static Toolkit interviewToolkit(ChatAgentWorkspace workspace,
+            PrdArtifactPort prdArtifactPort) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerAgentTool(new AskUserTool());
+        if (workspace instanceof ChatAgentWorkspace.ProjectDev dev) {
+            toolkit.registerAgentTool(new SavePrdTool(prdArtifactPort.workspacePath(),
+                    dev.workspaceId(), dev.containerName(), prdArtifactPort));
+        }
         return toolkit;
     }
 }

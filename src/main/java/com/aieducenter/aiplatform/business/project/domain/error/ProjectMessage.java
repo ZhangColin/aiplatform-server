@@ -36,7 +36,10 @@ public enum ProjectMessage implements CodeMessage {
     PROJECT_FILTER_UNKNOWN(400, "PRJ_014", "无效的项目列表状态过滤参数"),
 
     /** #41：PRD 读端点的「未产出」口径（工作区无 docs/PRD.md）——区别于项目不存在的 PRJ_001。 */
-    PRD_NOT_PRODUCED(404, "PRJ_015", "PRD 尚未产出");
+    PRD_NOT_PRODUCED(404, "PRJ_015", "PRD 尚未产出"),
+
+    /** #49：G1（需求确认门）业务谓词——PRD 未产出（BA 未判定明确，门不 ready）。 */
+    GATE_PRD_NOT_PRODUCED(409, "PRJ_016", "需求确认未通过：PRD 尚未产出");
 
     private final int httpStatus;
     private final String code;

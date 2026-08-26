@@ -22,6 +22,9 @@
  *   <li>会话恢复（#48）：AgentState 落 PostgreSQL（cat_agent_state，Postgres
  *       AgentStateStore）；会话行按表判定首见（跨重启不重发 session-created、
  *       settle 可续跑前置）——平台重启后同一会话标识恢复续跑，访谈上下文不丢</li>
+ *   <li>访谈工具（#48 ask_user / #49 savePrd）：平台自有对话智能体工具——向用户
+ *       提问挂起（等待点 QUESTION）与 PRD 落盘（写项目工作区 + 经 PrdArtifactPort
+ *       回调业务效果，效果归 business.project；savePrd 仅项目 dev 工作区注册）</li>
  * </ul>
  *
  * <h3>限界上下文</h3>

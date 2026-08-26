@@ -114,7 +114,7 @@ public class ProjectQueryAppService {
         Project project = loadProject(projectId);
         Iteration iteration = Iteration
                 .currentOf(iterationRepository.findByProjectId(projectId)).orElse(null);
-        return toDetail(project, iteration, gateView(projectId, iteration));
+        return toDetail(project, iteration, gateView(project, iteration));
     }
 
     /**
@@ -363,9 +363,11 @@ public class ProjectQueryAppService {
 
     /**
      * 当前阶段门就绪（A3 §5：计数门禁 ∧ 业务谓词）：无 OPEN 期 / 终态 / 无门段
-     * 返回 null（无按钮可点亮）；G3（actor=开发平台）另 ∧ 无未关闭 Bug。
+     * 返回 null（无按钮可点亮）；G1（需求梳理段）另 ∧ 「PRD 已产出」（查项目
+     * 状态位不查文件系统，#49——PRD 产出前门不 ready）；G3（actor=开发平台）
+     * 另 ∧ 无未关闭 Bug。
      */
-    private ProjectDetailResponse.GateView gateView(Long projectId, Iteration iteration) {
+    private ProjectDetailResponse.GateView gateView(Project project, Iteration iteration) {
         if (iteration == null || iteration.getStatus() != IterationStatus.OPEN) {
             return null;
         }
@@ -376,15 +378,18 @@ public class ProjectQueryAppService {
         ExitGate gate = stage.exitGate();
         boolean ready = stageAdvanceService.gateOpen(ProjectMainChain.definition(),
                 iteration.getStage(), iteration.getStageTaskCount());
+        if (ready && ProjectMainChain.STAGE_BA.equals(iteration.getStage())) {
+            ready = project.getPrdProducedAt() != null;
+        }
         if (ready && ProjectMainChain.GATE_ACTOR_PLATFORM.equals(gate.actor())) {
-            ready = !openBugQueryPort.hasOpenBugs(projectId);
+            ready = !openBugQueryPort.hasOpenBugs(project.getId());
         }
         return new ProjectDetailResponse.GateView(gate.actor(), ready);
     }
 
     /** 门就绪待办条目（未就绪 / 无门 / 已收口 → null）：title 素材（阶段标签）与时刻在此取齐。 */
     private GateReadyResponse gateReadyOf(Project project, Iteration iteration) {
-        ProjectDetailResponse.GateView gate = gateView(project.getId(), iteration);
+        ProjectDetailResponse.GateView gate = gateView(project, iteration);
         if (gate == null || !gate.ready()) {
             return null;
         }
@@ -415,7 +420,7 @@ public class ProjectQueryAppService {
                     .orElse(false);
         }
         Iteration current = Iteration.currentOf(iterations).orElse(null);
-        ProjectDetailResponse.GateView gate = gateView(project.getId(), current);
+        ProjectDetailResponse.GateView gate = gateView(project, current);
         return (gate != null && gate.ready())
                 || pendingWorkspaces.contains(project.getWorkspaceId());
     }

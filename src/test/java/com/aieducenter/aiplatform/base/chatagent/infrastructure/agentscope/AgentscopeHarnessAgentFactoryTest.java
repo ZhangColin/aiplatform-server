@@ -7,6 +7,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentWorkspace;
+import com.aieducenter.aiplatform.base.chatagent.domain.port.PrdArtifactPort;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -23,13 +24,26 @@ import org.junit.jupiter.api.Test;
  */
 class AgentscopeHarnessAgentFactoryTest {
 
+    /** PRD 业务契约桩（#49：路径正本 + 落盘回调空转——工厂只取路径，效果归适配器测试）。 */
+    private static final PrdArtifactPort PRD_PORT = new PrdArtifactPort() {
+        @Override
+        public String workspacePath() {
+            return "docs/PRD.md";
+        }
+
+        @Override
+        public void onWritten(String workspaceId) {
+            // 空转：工厂测试不触达落盘回调
+        }
+    };
+
     private AgentscopeHarnessAgentFactory factoryWith(List<HarnessAgent> created) {
         return factoryWith(created, new InMemoryAgentStateStore());
     }
 
     private AgentscopeHarnessAgentFactory factoryWith(List<HarnessAgent> created,
                                                       AgentStateStore stateStore) {
-        return new AgentscopeHarnessAgentFactory(stateStore,
+        return new AgentscopeHarnessAgentFactory(stateStore, PRD_PORT,
                 (name, sysPrompt, modelString, workspace) -> {
                     HarnessAgent agent = mock(HarnessAgent.class);
                     created.add(agent);
@@ -127,11 +141,23 @@ class AgentscopeHarnessAgentFactoryTest {
         assumeTrue(System.getenv("DEEPSEEK_API_KEY") != null,
                 "无 DEEPSEEK_API_KEY，跳过真构建断言");
         AgentStateStore stateStore = new InMemoryAgentStateStore();
-        AgentscopeHarnessAgentFactory factory = new AgentscopeHarnessAgentFactory(stateStore);
+        AgentscopeHarnessAgentFactory factory = new AgentscopeHarnessAgentFactory(stateStore, PRD_PORT);
 
         HarnessAgent agent = factory.obtain("chat-agent-t", "sys",
                 "deepseek:deepseek-v4-flash", new ChatAgentWorkspace.Local(null));
 
         assertThat(agent.getStateStore()).isSameAs(stateStore);
+    }
+
+    @Test
+    void given_local_vs_project_dev_when_interview_toolkit_then_savePrd_only_on_project_dev() {
+        // #49：savePrd 锚定项目（工作区 + 业务效果经端口）——本地兜底工作区无项目
+        // 语境不注册（模型不可见）；ask_user 两形态都在。
+        assertThat(AgentscopeHarnessAgentFactory
+                .interviewToolkit(new ChatAgentWorkspace.Local(null), PRD_PORT).getToolNames())
+                .containsExactly(AskUserTool.NAME);
+        assertThat(AgentscopeHarnessAgentFactory.interviewToolkit(
+                new ChatAgentWorkspace.ProjectDev("42", "ws-42-dev"), PRD_PORT).getToolNames())
+                .containsExactlyInAnyOrder(AskUserTool.NAME, SavePrdTool.NAME);
     }
 }

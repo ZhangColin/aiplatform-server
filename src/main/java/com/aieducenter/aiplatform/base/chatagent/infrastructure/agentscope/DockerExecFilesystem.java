@@ -335,11 +335,17 @@ public final class DockerExecFilesystem implements AbstractFilesystem {
     /** 覆盖写（write 的 create-only 语义之外的内通道：edit 回写 / upload）。 */
     private WriteResult put(String filePath, byte[] content) {
         String containerPath = containerPathOrThrow(filePath);
-        ExecOutput out = exec.run(
-                "mkdir -p " + sh(parentOf(containerPath)) + " && cat > " + sh(containerPath),
-                content);
+        ExecOutput out = exec.run(overwriteWriteCommand(containerPath), content);
         return out.ok() ? WriteResult.ok(filePath)
                 : WriteResult.fail("Error writing file '" + filePath + "': " + out.stderr());
+    }
+
+    /**
+     * 覆盖写命令（mkdir 兜底父目录 + {@code cat >} 覆盖，stdin 灌内容）：
+     * 文件面写路径的单一缝——edit 回写/upload 与 SavePrdTool 的 PRD 落盘共用同形。
+     */
+    static String overwriteWriteCommand(String containerPath) {
+        return "mkdir -p " + sh(parentOf(containerPath)) + " && cat > " + sh(containerPath);
     }
 
     /** create-only 写：noclobber（set -C）保证「已存在即拒绝」原子成立（防 test/cat 间隙竞态）。 */
@@ -391,8 +397,8 @@ public final class DockerExecFilesystem implements AbstractFilesystem {
         return idx <= 0 ? "/" : containerPath.substring(0, idx);
     }
 
-    /** shell 单引号包裹（内嵌单引号转义为 '\''），杜绝注入。 */
-    private static String sh(String s) {
+    /** shell 单引号包裹（内嵌单引号转义为 '\''），杜绝注入。包内共用（SavePrdTool 同式调用）。 */
+    static String sh(String s) {
         return "'" + s.replace("'", "'\\''") + "'";
     }
 

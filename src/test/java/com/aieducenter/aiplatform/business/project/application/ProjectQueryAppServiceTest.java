@@ -142,8 +142,22 @@ class ProjectQueryAppServiceTest {
     }
 
     @Test
+    void given_ba_with_task_without_prd_when_detail_then_gate_not_ready() {
+        // #49 G1 业务谓词：计数达标（taskCount=1）但 PRD 未产出 → 不就绪
+        // （门就绪与 approve 门禁同口径；PRD 产出前门不 ready）
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8002L,
+                false).getId();
+
+        ProjectDetailResponse response = appService.detail(projectId);
+
+        assertThat(response.gate()).isEqualTo(new ProjectDetailResponse.GateView(
+                ProjectMainChain.GATE_ACTOR_USER, false));
+    }
+
+    @Test
     void given_ba_with_task_when_detail_then_gate_user_ready() {
-        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8003L).getId();
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8003L,
+                true).getId();
 
         ProjectDetailResponse response = appService.detail(projectId);
 
@@ -259,8 +273,9 @@ class ProjectQueryAppServiceTest {
 
     @Test
     void given_gate_ready_or_pending_waits_when_list_pending_then_both_matched() {
-        // ① 门就绪（GATE_PENDING 派生）：BA 计数 1
-        Long gateReady = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8106L).getId();
+        // ① 门就绪（GATE_PENDING 派生）：BA 计数 1 ∧ PRD 已产出
+        Long gateReady = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8106L,
+                true).getId();
         // ② 计数不足但有等待点（AGENT_WAIT）：工作区在待处理集合里
         Long waitPending = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 0, 8107L).getId();
         // ③ 两头都不占：不出现在 pending
@@ -464,8 +479,8 @@ class ProjectQueryAppServiceTest {
 
     @Test
     void given_gate_ready_projects_when_listGateReady_then_ready_only_with_stage_label() {
-        // ① BA 计数达标（G1 用户门就绪）→ 在列
-        Project ready = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8301L);
+        // ① BA 计数达标 ∧ PRD 已产出（G1 用户门就绪）→ 在列
+        Project ready = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, 8301L, true);
         // ② 计数不足 → 不在列
         persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 0, 8302L);
         // ③ 开发段无门 → 不在列
@@ -512,8 +527,18 @@ class ProjectQueryAppServiceTest {
     // ---------- 测试数据 ----------
 
     private Project persistedProjectWithIteration(String stage, int taskCount, long workspaceId) {
-        Project project = projectRepository.save(Project
-                .create("读侧测试", ProjectType.WEBSITE, "opencode", workspaceId, null));
+        return persistedProjectWithIteration(stage, taskCount, workspaceId, false);
+    }
+
+    /** prdProduced：置「PRD 已产出」状态位（#49 G1 门就绪谓词的另一半输入）。 */
+    private Project persistedProjectWithIteration(String stage, int taskCount, long workspaceId,
+            boolean prdProduced) {
+        Project project = Project.create("读侧测试", ProjectType.WEBSITE, "opencode",
+                workspaceId, null);
+        if (prdProduced) {
+            project.markPrdProduced();
+        }
+        projectRepository.save(project);
         Iteration iteration = Iteration.open(project.getId(), Iteration.FIRST_SEQ, stage);
         for (int i = 0; i < taskCount; i++) {
             iteration.recordStageTask();

@@ -113,7 +113,7 @@ class ProjectGateAppServiceTest {
     @Test
     void given_ba_with_task_when_approve_then_advance_demo_confirmation_and_auto_demo()
             throws Exception {
-        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
         stubAutoDispatch("run-demo", ProjectMainChain.STAGE_DEMO);
 
         ProjectDetailResponse response = asUser(42L, () -> appService.approve(projectId));
@@ -149,6 +149,21 @@ class ProjectGateAppServiceTest {
         // G1 前缀段自动：需求确认通过 → 自动跑 Demo（A3 §2.3）
         verify(agentTaskAppService).dispatchTask(projectId,
                 new ProjectAgentTaskCommand(RolePreset.DEMO_KICKOFF_PROMPT, RolePreset.DEMO));
+    }
+
+    @Test
+    void given_ba_with_task_without_prd_when_approve_then_prj_016_stays() {
+        // #49 G1 业务谓词：PRD 未产出（BA 未判定明确）——计数达标门也不放行
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+
+        assertThatThrownBy(() -> appService.approve(projectId))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.GATE_PRD_NOT_PRODUCED.message());
+
+        // 停留 BA：无留痕、无 SSE、无自动 Demo（与计数不足同口径）
+        assertThat(confirmationCount()).isZero();
+        assertThat(openIteration(projectId).getStage()).isEqualTo(ProjectMainChain.STAGE_BA);
+        verifyNoInteractions(notificationAppService, agentTaskAppService);
     }
 
     @Test
@@ -254,7 +269,7 @@ class ProjectGateAppServiceTest {
 
     @Test
     void given_auto_demo_failure_when_approve_then_gate_kept() {
-        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
         when(agentTaskAppService.dispatchTask(anyLong(), any()))
                 .thenThrow(new RuntimeException("引擎不可用"));
 
@@ -330,7 +345,7 @@ class ProjectGateAppServiceTest {
 
     @Test
     void given_prd_in_workspace_when_approve_ba_then_feedback_and_artifact_indexed() {
-        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
         stubAutoDispatch("run-demo", ProjectMainChain.STAGE_DEMO);
         stubWorkspaceFile("# PRD\n\n做一个电商官网，含购物车与结算。", 0);
 
@@ -360,7 +375,9 @@ class ProjectGateAppServiceTest {
 
     @Test
     void given_prd_missing_when_approve_ba_then_feedback_only_artifact_degraded() {
-        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        // 状态位已置（savePrd 成功过）但工作区文件缺（读侧异常口径）：门照过
+        // （#49 谓词查状态位不查文件系统），摄取降级跳过 ARTIFACT
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
         stubWorkspaceFile("", 1); // 文件未产出：cat 退出码非 0
 
         appService.approve(projectId);
@@ -387,7 +404,7 @@ class ProjectGateAppServiceTest {
 
     @Test
     void given_index_failure_when_approve_then_gate_kept() {
-        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1);
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
         stubWorkspaceFile("# PRD", 0);
         doThrow(new RuntimeException("向量库写失败")).when(knowledgePort).index(any());
 
@@ -412,8 +429,16 @@ class ProjectGateAppServiceTest {
     }
 
     private Long persistedProjectWithIteration(String stage, int taskCount) {
-        Project project = projectRepository.save(Project
-                .create("门测试", ProjectType.WEBSITE, "opencode", 9301L, null));
+        return persistedProjectWithIteration(stage, taskCount, false);
+    }
+
+    /** prdProduced：置「PRD 已产出」状态位（#49 G1 门谓词的另一半输入）。 */
+    private Long persistedProjectWithIteration(String stage, int taskCount, boolean prdProduced) {
+        Project project = Project.create("门测试", ProjectType.WEBSITE, "opencode", 9301L, null);
+        if (prdProduced) {
+            project.markPrdProduced();
+        }
+        projectRepository.save(project);
         Iteration iteration = Iteration.open(project.getId(), Iteration.FIRST_SEQ, stage);
         for (int i = 0; i < taskCount; i++) {
             iteration.recordStageTask();

@@ -18,7 +18,8 @@
  * <ul>
  *   <li>domain - 领域层：聚合根（Project、Iteration）、角色卡 preset 与主链定义（model）、仓储接口、枚举、错误码</li>
  *   <li>application - 应用层：应用服务（Lifecycle / AgentTask / Wait）、SSE 事件名册常量、DTO</li>
- *   <li>infrastructure - 基础设施层：底座端口已自配适配器，本上下文暂无自有适配器</li>
+ *   <li>infrastructure - 基础设施层：base.chatagent 的 PRD 产物端口实现（savePrd 效果
+ *       半边：置状态位 + document-updated，#49）</li>
  *   <li>endpoints - 北向接口适配器层：REST API（ProjectController、ProjectAgentController）</li>
  * </ul>
  *
