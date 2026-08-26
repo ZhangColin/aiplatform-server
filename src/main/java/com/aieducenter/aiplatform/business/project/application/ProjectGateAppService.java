@@ -124,7 +124,7 @@ public class ProjectGateAppService {
                 StageChangedPayload.approved(projectId, next.name()));
 
         // A5 §1 摄取（事务提交后，失败降级不炸）：门决策留痕 FEEDBACK + 被通过
-        // 阶段的产物清单 ARTIFACT（v1 仅需求梳理段 PRD.md）。置于自动 Demo 之前——
+        // 阶段的产物清单 ARTIFACT（v1 仅需求梳理段 docs/PRD.md）。置于自动 Demo 之前——
         // Demo run 的检索注入可命中刚入库的 PRD。
         knowledgeAppService.indexFeedback(projectId, confirmation);
         knowledgeAppService.indexStageArtifacts(projectId, current.name());

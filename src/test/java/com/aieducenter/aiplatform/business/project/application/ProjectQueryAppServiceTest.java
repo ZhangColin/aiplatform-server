@@ -1,6 +1,7 @@
 package com.aieducenter.aiplatform.business.project.application;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Currency;
 import java.util.List;
@@ -8,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,7 +23,12 @@ import com.aieducenter.aiplatform.base.metering.application.MeteringAppService;
 import com.aieducenter.aiplatform.base.metering.domain.enums.TokenKind;
 import com.aieducenter.aiplatform.base.metering.domain.model.TokenUsage;
 import com.aieducenter.aiplatform.base.metering.domain.model.UsageSummary;
+import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
+import com.aieducenter.aiplatform.base.workspace.application.dto.command.WorkspaceExecCommand;
+import com.aieducenter.aiplatform.base.workspace.application.dto.response.ExecResultResponse;
+import com.aieducenter.aiplatform.base.workspace.domain.error.WorkspaceMessage;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.PrdResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectUsageResponse;
@@ -40,6 +47,7 @@ import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepo
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -78,6 +86,19 @@ class ProjectQueryAppServiceTest {
     /** 计量查询缝：mock 用例本体（MeteringLocalAdapter 是 sink+query 双端口 bean，整替会断 sink 注入）。 */
     @MockitoBean
     private MeteringAppService meteringAppService;
+
+    /**
+     * PRD 直读工作区的执行缝（#41）：mock exec 断言命令与出口码口径。get 按真实
+     * 行为对不存在的工作区抛 WSP_001（previewUrlOf 的降级路径不变）。
+     */
+    @MockitoBean
+    private WorkspaceLifecycleAppService workspaceLifecycleAppService;
+
+    @BeforeEach
+    void stubWorkspaceGetMissing() {
+        when(workspaceLifecycleAppService.get(anyString()))
+                .thenThrow(new ApplicationException(WorkspaceMessage.WORKSPACE_NOT_FOUND));
+    }
 
     @AfterEach
     void tearDown() {
@@ -371,6 +392,72 @@ class ProjectQueryAppServiceTest {
         assertThatThrownBy(() -> appService.usage(-1L))
                 .isInstanceOf(ApplicationException.class)
                 .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
+    // ---------- PRD 读（#41：直读工作区，文件是事实源） ----------
+
+    @Test
+    void given_workspace_prd_file_when_prd_then_content_and_file_mtime_returned() {
+        Long projectId = persistedProjectWithoutIteration(8401L).getId();
+        when(workspaceLifecycleAppService.exec(eq("8401"), any(WorkspaceExecCommand.class)))
+                .thenReturn(new ExecResultResponse("1756100000\n# 官网 PRD\n\n目标：三页官网。\n",
+                        "", 0));
+
+        PrdResponse response = appService.prd(projectId);
+
+        // 一次 exec 取齐 mtime（stat 首行 epoch 秒）+ 正文（cat 余文），路径 = 主链产物单一事实
+        assertThat(response.projectId()).isEqualTo(projectId.toString());
+        assertThat(response.content()).isEqualTo("# 官网 PRD\n\n目标：三页官网。\n");
+        assertThat(response.updatedAt()).isEqualTo(Instant.ofEpochSecond(1756100000));
+        verify(workspaceLifecycleAppService).exec(eq("8401"), eq(new WorkspaceExecCommand(
+                "test -f '/workspace/" + ProjectMainChain.PRD_ARTIFACT + "' && stat -c %Y "
+                        + "'/workspace/" + ProjectMainChain.PRD_ARTIFACT + "' && cat "
+                        + "'/workspace/" + ProjectMainChain.PRD_ARTIFACT + "'")));
+    }
+
+    @Test
+    void given_no_prd_file_when_prd_then_prj_015_not_produced() {
+        Long projectId = persistedProjectWithoutIteration(8402L).getId();
+        when(workspaceLifecycleAppService.exec(any(), any(WorkspaceExecCommand.class)))
+                .thenReturn(new ExecResultResponse("", "stat: 无法取文件状态", 1));
+
+        // 文件缺（test -f 失败，退出码 1）= 未产出口径：404 PRJ_015（前端区分「还没产出」）
+        assertThatThrownBy(() -> appService.prd(projectId))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.PRD_NOT_PRODUCED.message());
+    }
+
+    @Test
+    void given_dead_container_when_prd_then_wsp_002_environment_fault() {
+        Long projectId = persistedProjectWithoutIteration(8403L).getId();
+        when(workspaceLifecycleAppService.exec(any(), any(WorkspaceExecCommand.class)))
+                .thenReturn(new ExecResultResponse("", "docker: No such container", 125));
+
+        // docker exec 自身失败（125/126）≠ 未产出：环境故障照抛（WSP_002）
+        assertThatThrownBy(() -> appService.prd(projectId))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(WorkspaceMessage.ENVIRONMENT_OPERATION_FAILED.message());
+    }
+
+    @Test
+    void given_missing_project_when_prd_then_prj_001() {
+        assertThatThrownBy(() -> appService.prd(-1L))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
+    @Test
+    void given_prd_status_bit_marked_when_saved_then_queryable_after_reload() {
+        // 「PRD 已产出」状态位可查询（#49 G1 门谓词依赖）：置位落库往返不丢
+        Project project = persistedProjectWithoutIteration(8404L);
+        project.markPrdProduced();
+        projectRepository.save(project);
+
+        assertThat(projectRepository.findById(project.getId()).orElseThrow()
+                .getPrdProducedAt()).isNotNull();
+        assertThat(projectRepository.findById(
+                persistedProjectWithoutIteration(8405L).getId()).orElseThrow()
+                .getPrdProducedAt()).isNull(); // 未置位项目仍为 NULL
     }
 
     // ---------- workbench 查询端口：门就绪清单 / workspaceId 寻址 ----------

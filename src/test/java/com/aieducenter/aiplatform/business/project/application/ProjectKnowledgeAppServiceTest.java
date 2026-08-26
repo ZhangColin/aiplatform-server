@@ -21,6 +21,7 @@ import com.aieducenter.aiplatform.base.workspace.application.dto.command.Workspa
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.ExecResultResponse;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.enums.ProjectType;
+import com.aieducenter.aiplatform.business.project.domain.model.ProjectMainChain;
 import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,17 +78,18 @@ class ProjectKnowledgeAppServiceTest {
         ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
         verify(knowledgePort).index(spec.capture());
         assertThat(spec.getValue().kind()).isEqualTo(ProjectKnowledgeAppService.KIND_ARTIFACT);
-        assertThat(spec.getValue().sourceRef()).isEqualTo(project.getId() + ":BA:PRD.md");
+        assertThat(spec.getValue().sourceRef())
+                .isEqualTo(project.getId() + ":BA:" + ProjectMainChain.PRD_ARTIFACT);
         assertThat(spec.getValue().projectId()).isEqualTo(project.getId().toString());
         assertThat(spec.getValue().projectName()).isEqualTo("知识测试");
-        assertThat(spec.getValue().title()).isEqualTo("PRD.md");
+        assertThat(spec.getValue().title()).isEqualTo(ProjectMainChain.PRD_ARTIFACT);
         // 段落级分块：短段落并入同一块（目标 ~800 字符内不拆散）
         assertThat(spec.getValue().chunks()).singleElement().isEqualTo(
                 "# 电商 PRD\n\n目标：做一个电商官网。\n\n购物车支持优惠券。");
         assertThat(spec.getValue().meta()).containsEntry("stage", "BA");
-        // 工作区读取地址：产物文件在 /workspace/ 下（dev 镜像约定）
+        // 工作区读取地址：产物文件在 /workspace/docs/ 下（#41 主链产物单一事实）
         verify(workspaceLifecycleAppService).exec(eq("9400"),
-                eq(new WorkspaceExecCommand("cat '/workspace/PRD.md'")));
+                eq(new WorkspaceExecCommand("cat '/workspace/" + ProjectMainChain.PRD_ARTIFACT + "'")));
     }
 
     @Test

@@ -89,8 +89,8 @@ public class ProjectKnowledgeAppService {
 
     /**
      * ARTIFACT：门 approve 后按主链定义读本阶段产物清单文件（v1 仅需求梳理段
-     * PRD.md）分块入库——source_ref = {@code {projectId}:{stage}:{文件名}}，
-     * 产物未产出（文件缺）记日志跳过。
+     * docs/PRD.md，#41 起路径随主链产物单一事实）分块入库——source_ref =
+     * {@code {projectId}:{stage}:{文件名}}，产物未产出（文件缺）记日志跳过。
      */
     void indexStageArtifacts(Long projectId, String stage) {
         quietly("ARTIFACT 摄取", () -> {

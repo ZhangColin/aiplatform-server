@@ -19,6 +19,13 @@ public final class ProjectEventTypes {
     /** 工作区已销毁（删除级联清理落定后）。 */
     public static final String WORKSPACE_DESTROYED = "workspace-destroyed";
 
+    /**
+     * 文档已更新（#41）：工作区文档产物写出/修订落定后广播（v1 唯一写入方 = BA 的
+     * savePrd 工具，#49；本票只立常量与清单，写入方接线归 #49）。前端按失效为主
+     * 模式消费——invalidate 文档域后重拉 REST，不携带内容增量。
+     */
+    public static final String DOCUMENT_UPDATED = "document-updated";
+
     // ---------- payload 契约键（SSE事件清单·通道一） ----------
 
     /** 关联字段（通知通道 streamId 同值）。 */
@@ -53,6 +60,12 @@ public final class ProjectEventTypes {
 
     /** 预览 URL（preview-ready）。 */
     public static final String URL_FIELD = "url";
+
+    /** 文档类型（document-updated；v1 仅 PRD）。 */
+    public static final String DOCUMENT_TYPE_FIELD = "documentType";
+
+    /** 文档类型值：PRD（docs/PRD.md 写出/修订）。 */
+    public static final String DOCUMENT_TYPE_PRD = "PRD";
 
     private ProjectEventTypes() {
     }

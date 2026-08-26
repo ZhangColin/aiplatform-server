@@ -337,7 +337,7 @@ class ProjectGateAppServiceTest {
         appService.approve(projectId);
 
         // 两类素材入库（A5 §1）：FEEDBACK（approve 留痕，无理由行）+ ARTIFACT（v1
-        // 仅需求梳理段 PRD.md，source_ref = {projectId}:{stage}:{文件名}，meta 带 stage）
+        // 仅需求梳理段 docs/PRD.md，source_ref = {projectId}:{stage}:{文件名}，meta 带 stage）
         ArgumentCaptor<KnowledgeSpec> spec = ArgumentCaptor.forClass(KnowledgeSpec.class);
         verify(knowledgePort, times(2)).index(spec.capture());
         KnowledgeSpec feedback = spec.getAllValues().stream()
@@ -350,8 +350,9 @@ class ProjectGateAppServiceTest {
         KnowledgeSpec artifact = spec.getAllValues().stream()
                 .filter(s -> ProjectKnowledgeAppService.KIND_ARTIFACT.equals(s.kind()))
                 .findFirst().orElseThrow();
-        assertThat(artifact.sourceRef()).isEqualTo(projectId + ":BA:PRD.md");
-        assertThat(artifact.title()).isEqualTo("PRD.md");
+        assertThat(artifact.sourceRef())
+                .isEqualTo(projectId + ":BA:" + ProjectMainChain.PRD_ARTIFACT);
+        assertThat(artifact.title()).isEqualTo(ProjectMainChain.PRD_ARTIFACT);
         assertThat(artifact.chunks()).singleElement()
                 .isEqualTo("# PRD\n\n做一个电商官网，含购物车与结算。");
         assertThat(artifact.meta()).containsEntry("stage", ProjectMainChain.STAGE_BA);

@@ -32,6 +32,7 @@ import com.aieducenter.aiplatform.business.project.application.dto.command.AddDe
 import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.command.StageRejectCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.DemandPoolEntryResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.PrdResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
@@ -44,12 +45,12 @@ import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
  * 项目主链 REST 面（demo ProjectController 的重写，B0 §2 片5）：对话建项目
  * （选引擎，建即自动跑 BA）→ 下任务 / 答复等待点（ProjectAgentController）→
  * 门操作与收口（approve/reject，A3 §3/§5）→ 需求池 / 归档 / 详情 / 用量 /
- * 源码包下载（片5c 项目周边，票 #24）→ 预览 → 删除真删级联。
+ * PRD 读（#41）→ 源码包下载（片5c 项目周边，票 #24）→ 预览 → 删除真删级联。
  */
 @RestController
 @RequestMapping("/api/projects")
 @Validated
-@Tag(name = "Projects", description = "项目主链：建项目 / 列表 / 详情 / 门操作 / 需求池 / 归档 / 用量 / 源码包 / 预览 / 删除")
+@Tag(name = "Projects", description = "项目主链：建项目 / 列表 / 详情 / 门操作 / 需求池 / 归档 / 用量 / PRD / 源码包 / 预览 / 删除")
 public class ProjectController {
 
     private final ProjectLifecycleAppService appService;
@@ -161,6 +162,18 @@ public class ProjectController {
                     + "入项目总量不入任何期桶（收口期成本定格）")
     public ApiResponse<ProjectUsageResponse> usage(@PathVariable String id) {
         return ApiResponse.ok(queryAppService.usage(parseId(id)));
+    }
+
+    @GetMapping("/{id}/prd")
+    @Operation(summary = "PRD 读（当前版 markdown，直读工作区）",
+            description = "PRD = 项目 dev 工作区的 docs/PRD.md（事实源，BA 的 savePrd 写出，"
+                    + "v1 无版本链只最新版）——本端点直读工作区文件返回 {projectId, content, updatedAt}，"
+                    + "updatedAt = 文件 mtime（ISO-8601，秒精度）。未产出（工作区无该文件）"
+                    + "404 PRJ_015，与项目不存在的 PRJ_001 区分，前端据此呈现「还没产出」。"
+                    + "写出/更新时通知通道（/api/events?projectId=）发 document-updated"
+                    + "（payload {projectId, documentType:\"PRD\"}），消费姿势 = invalidate 文档域后重拉本端点")
+    public ApiResponse<PrdResponse> prd(@PathVariable String id) {
+        return ApiResponse.ok(queryAppService.prd(parseId(id)));
     }
 
     @GetMapping("/{id}/source-package")

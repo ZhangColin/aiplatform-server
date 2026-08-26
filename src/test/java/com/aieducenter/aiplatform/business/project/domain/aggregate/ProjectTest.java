@@ -53,6 +53,23 @@ class ProjectTest {
     }
 
     @Test
+    void given_new_project_when_create_then_prd_not_produced() {
+        Project project = Project.create("官网 demo", ProjectType.WEBSITE, "opencode", 1L, null);
+
+        assertThat(project.getPrdProducedAt()).isNull(); // NULL = PRD 未产出（#41 状态位）
+    }
+
+    @Test
+    void given_prd_saved_when_markPrdProduced_then_timestamp_set() {
+        Project project = Project.create("官网 demo", ProjectType.WEBSITE, "opencode", 1L, null);
+
+        project.markPrdProduced();
+
+        // 置位含产出/更新时间戳；savePrd 修订再执行即刷新为最近写出（G1 谓词查非空）
+        assertThat(project.getPrdProducedAt()).isNotNull();
+    }
+
+    @Test
     void given_unarchived_when_archive_then_archived_at_set() {
         Project project = Project.create("官网 demo", ProjectType.WEBSITE, "opencode", 1L, null);
 

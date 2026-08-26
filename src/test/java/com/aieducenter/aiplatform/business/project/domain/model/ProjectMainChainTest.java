@@ -62,8 +62,9 @@ class ProjectMainChainTest {
 
     @Test
     void given_chain_when_inspect_artifacts_then_only_ba_carries_prd() {
+        // #41 grilling 定案：PRD 住工作区 docs/（读写方共用 PRD_ARTIFACT 单一事实）
         assertThat(chain.find(ProjectMainChain.STAGE_BA).orElseThrow().artifacts())
-                .containsExactly("PRD.md");
+                .containsExactly(ProjectMainChain.PRD_ARTIFACT);
         assertThat(chain.find(ProjectMainChain.STAGE_DEMO).orElseThrow().artifacts()).isNull();
         assertThat(chain.find(ProjectMainChain.STAGE_TEST).orElseThrow().artifacts()).isNull();
     }

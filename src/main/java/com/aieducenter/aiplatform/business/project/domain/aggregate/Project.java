@@ -57,6 +57,15 @@ public class Project extends Auditable implements AggregateRoot<Project, Long> {
     @Column(name = "archived_at")
     private LocalDateTime archivedAt;
 
+    /**
+     * 「PRD 已产出」状态位（#41）：PRD 事实源是工作区 {@code docs/PRD.md}，本位只记
+     * 「BA 已写出过」这一门禁事实——NULL = 未产出；写入方是 BA 的 savePrd（#49，
+     * 写文件成功即置位），G1 门谓词查本位不查文件系统。时间戳随每次写出刷新
+     * （产出/更新共用，v1 无版本链）。
+     */
+    @Column(name = "prd_produced_at")
+    private LocalDateTime prdProducedAt;
+
     protected Project() {
     }
 
@@ -96,6 +105,14 @@ public class Project extends Auditable implements AggregateRoot<Project, Long> {
             throw new DomainException(ProjectMessage.PROJECT_ALREADY_ARCHIVED);
         }
         this.archivedAt = LocalDateTime.now();
+    }
+
+    /**
+     * PRD 已产出置位（#49 savePrd 写工作区文件成功后调用）：幂等单向——首次 = 产出，
+     * 修订再执行 = 刷新更新时间（只前进，无清位路径；删除项目与工作区同亡）。
+     */
+    public void markPrdProduced() {
+        this.prdProducedAt = LocalDateTime.now();
     }
 
     @PrePersist

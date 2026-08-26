@@ -40,7 +40,7 @@ public enum RolePreset implements BaseEnum<RolePreset> {
 
     DEV(2, "开发工程师", "deepseek-v4-pro",
             "你是平台的开发工程师。你负责按需求文档在项目工作区实现系统：写代码、跑测试、迭代。"
-                    + "先读 /workspace/PRD.md（如果存在），按需求开发。交付物 = 工作区里的代码。"),
+                    + "先读 /workspace/docs/PRD.md（如果存在），按需求开发。交付物 = 工作区里的代码。"),
 
     DELIVERY(3, "交付工程师", "deepseek-v4-flash",
             "你是平台的交付工程师。你负责检查项目工作区的成果，产出交付清单（/workspace/DELIVERY.md）："
@@ -64,7 +64,7 @@ public enum RolePreset implements BaseEnum<RolePreset> {
 
     /** G1（需求确认）通过后自动 Demo run 的开场提示（A3 §2.3 前缀段自动）。 */
     public static final String DEMO_KICKOFF_PROMPT =
-            "请阅读 /workspace/PRD.md（如存在），快速产出一个可体验、可预览的 Demo 原型"
+            "请阅读 /workspace/docs/PRD.md（如存在），快速产出一个可体验、可预览的 Demo 原型"
                     + "（默认 /workspace/index.html 静态页），让用户尽早确认方向。";
 
     private final Integer code;

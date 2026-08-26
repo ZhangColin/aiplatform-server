@@ -1,6 +1,7 @@
 package com.aieducenter.aiplatform.business.project.endpoints.controller;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,7 @@ import com.aieducenter.aiplatform.business.project.application.ProjectLifecycleA
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.command.AddDemandEntryCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.DemandPoolEntryResponse;
+import com.aieducenter.aiplatform.business.project.application.dto.response.PrdResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectDetailResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectPreviewResponse;
@@ -371,6 +373,32 @@ class ProjectControllerTest {
         performAsUser(get("/api/projects/100/preview"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.url").value("http://localhost:30080"));
+    }
+
+    @Test
+    void given_prd_in_workspace_when_get_prd_then_content_and_updated_at_returned() throws Exception {
+        when(queryAppService.prd(100L)).thenReturn(new PrdResponse("100",
+                "# 官网 PRD\n\n目标：三页官网。\n", Instant.ofEpochSecond(1756100000)));
+
+        performAsUser(get("/api/projects/100/prd"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.projectId").value("100"))
+                .andExpect(jsonPath("$.data.content").value("# 官网 PRD\n\n目标：三页官网。\n"))
+                // Instant → ISO-8601（Jackson2ObjectMapperBuilder 缺省关时间戳）
+                .andExpect(jsonPath("$.data.updatedAt")
+                        .value(Instant.ofEpochSecond(1756100000).toString()));
+    }
+
+    @Test
+    void given_prd_not_produced_when_get_prd_then_prj_015_as_404() throws Exception {
+        // 「未产出」口径：404 PRJ_015（区别于项目不存在的 PRJ_001）——前端区分「还没产出」
+        when(queryAppService.prd(100L))
+                .thenThrow(new ApplicationException(ProjectMessage.PRD_NOT_PRODUCED));
+
+        performAsUser(get("/api/projects/100/prd"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404))
+                .andExpect(jsonPath("$.message").value("PRD 尚未产出"));
     }
 
     // ---------- 夹具 ----------

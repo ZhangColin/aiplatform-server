@@ -18,7 +18,7 @@ import com.aieducenter.aiplatform.business.project.domain.enums.ConfirmationKind
  * 〔Demo 确认·用户〕→ 开发(DEV) → 测试(无默认角色) →〔开发完成确认·开发平台〕→
  * 验收(无默认角色) →〔验收·用户〕→ 关闭(终态)。开发段无出口门——开发→测试由
  * 编排触发（A4 首个测试任务创建时 advance）；验收门 minTasks=0（验收段无
- * agent 任务）；产物清单只作沉淀范围不作门禁（v1 仅需求梳理段 PRD.md）。
+ * agent 任务）；产物清单只作沉淀范围不作门禁（v1 仅需求梳理段 docs/PRD.md）。
  * ARCH preset 保留但不设段（开发期间手动下任务）。</p>
  */
 public final class ProjectMainChain {
@@ -49,8 +49,15 @@ public final class ProjectMainChain {
     /** 开发完成确认门的 actor（开发平台拍板，A3 §2.4 业务谓词归 A4 接线）。 */
     public static final String GATE_ACTOR_PLATFORM = "PLATFORM";
 
+    /**
+     * BA 段产物 PRD 在工作区内的路径（相对 {@code /workspace}，#41 grilling 定案）：
+     * PRD = 工作区文件事实源，读写方（PRD 读端点 / A5 ARTIFACT 摄取 / BA savePrd 与
+     * 编码智能体的直读）共用此一事实，勿散落字面量。
+     */
+    public static final String PRD_ARTIFACT = "docs/PRD.md";
+
     private static final MainChainDefinition DEFINITION = new MainChainDefinition(List.of(
-            StageEntry.of(STAGE_BA, "需求梳理", RolePreset.BA.name(), List.of("PRD.md"),
+            StageEntry.of(STAGE_BA, "需求梳理", RolePreset.BA.name(), List.of(PRD_ARTIFACT),
                     new ExitGate(GATE_ACTOR_USER, 1)),
             StageEntry.of(STAGE_DEMO, "Demo", RolePreset.DEMO.name(), null,
                     new ExitGate(GATE_ACTOR_USER, 1)),
