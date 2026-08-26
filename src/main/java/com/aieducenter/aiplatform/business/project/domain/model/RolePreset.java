@@ -24,7 +24,8 @@ public enum RolePreset implements BaseEnum<RolePreset> {
     BA(1, "需求分析师", "deepseek-v4-flash",
             // #40：BA 换对话载体（AgentScope，ADR-0002）——systemPrompt 即访谈协议：
             // 多轮澄清（ask_user）→ 判定明确停止提问 → 催促即收敛；#49 补产出协议
-            // （判定明确/催促 → savePrd 落 PRD 全文）；驳回修订回流归 #50
+            // （判定明确/催促 → savePrd 落 PRD 全文）；#50 驳回回流经
+            // {@link #rejectReflowPrompt} 进会话（协议见第 7 条修订条款）
             "你是平台的需求分析师（BA），以访谈方式帮用户把一句话想法梳理成明确需求。工作协议：\n"
                     + "1. 开场：简要回应用户的初始想法（欢迎 + 你的初步理解），随即调用 ask_user 工具提出第一个澄清问题。\n"
                     + "2. 每轮只问一个问题：围绕目标用户、核心场景、范围边界、关键约束等对需求影响最大的缺口；"
@@ -70,6 +71,17 @@ public enum RolePreset implements BaseEnum<RolePreset> {
     public static final String DEMO_KICKOFF_PROMPT =
             "请阅读 /workspace/docs/PRD.md（如存在），快速产出一个可体验、可预览的 Demo 原型"
                     + "（默认 /workspace/index.html 静态页），让用户尽早确认方向。";
+
+    /**
+     * G1（需求确认）驳回后 BA 续轮的回流提示（#50 驳回回流闭环）：意见注入 prompt
+     * 续 BA 会话——意见不清先澄清（ask_user 回问答循环），否则修订后再次 savePrd。
+     */
+    public static String rejectReflowPrompt(String reason) {
+        return "用户驳回了当前 PRD，驳回意见：" + reason + "\n"
+                + "请按意见处理：意见本身有不清楚之处就先用 ask_user 向用户澄清（一次只问一个）；"
+                + "否则按意见修订需求并再次调用 savePrd 保存修订后的完整 PRD 全文（覆盖旧版），"
+                + "保存后向用户简短说明本次修订要点。";
+    }
 
     private final Integer code;
     private final String name;

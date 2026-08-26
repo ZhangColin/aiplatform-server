@@ -15,3 +15,6 @@ Thumbs.db
 # Environment
 .env.production
 .env*.local
+
+# AgentScope 本地运行残留（冒烟/单测 workspace 兜底路径）
+.agentscope/

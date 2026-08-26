@@ -89,6 +89,10 @@ class ProjectGateAppServiceTest {
     @MockitoBean
     private WorkspaceLifecycleAppService workspaceLifecycleAppService;
 
+    /** BA 访谈编排 mock（#50 驳回回流验证；真链路见 BaInterviewAppServiceTest/冒烟）。 */
+    @MockitoBean
+    private BaInterviewAppService baInterviewAppService;
+
     @AfterEach
     void tearDown() {
         jdbcTemplate.update("DELETE FROM prj_confirmations");
@@ -310,6 +314,42 @@ class ProjectGateAppServiceTest {
                 .containsEntry("rejected", true)
                 .containsEntry("reason", "首页布局与 PRD 不符")
                 .doesNotContainKey("approved");
+
+        // 非 BA 段驳回无回流（#50 回流只挂 G1——BA 会话续轮是需求梳理段的事）
+        verifyNoInteractions(baInterviewAppService);
+    }
+
+    // ---------- #50 驳回回流：G1 驳回 → BA 续轮自动发起 ----------
+
+    @Test
+    void given_ba_reject_when_reject_then_ba_reflow_auto_started_with_reason() throws Exception {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
+
+        ProjectDetailResponse response = asUser(7L, () ->
+                appService.reject(projectId, " 范围太大，先做 MVP "));
+
+        // 门语义零回归：驳回落留痕、停留 BA 段（回流是留痕后的编排动作，不改变门行为）
+        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_BA);
+        assertThat(soleConfirmationRow().get("reason")).isEqualTo("范围太大，先做 MVP");
+
+        // 回流自动发起：门操作内起 BA 续轮，驳回意见进 prompt（可追溯入 BA 上下文）
+        ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
+        verify(baInterviewAppService).runInterviewTurn(eq(projectId), prompt.capture());
+        assertThat(prompt.getValue()).contains("范围太大，先做 MVP");
+    }
+
+    @Test
+    void given_reflow_start_failure_when_reject_then_rejection_kept() {
+        Long projectId = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 1, true);
+        when(baInterviewAppService.runInterviewTurn(anyLong(), anyString()))
+                .thenThrow(new RuntimeException("对话基座不可用"));
+
+        ProjectDetailResponse response = appService.reject(projectId, "范围太大");
+
+        // 起跑失败不阻断驳回留痕（照「BA 起跑失败不回滚建项目」口径）：停留 + 留痕 + SSE 完好
+        assertThat(response.stage()).isEqualTo(ProjectMainChain.STAGE_BA);
+        assertThat(confirmationCount()).isEqualTo(1);
+        verify(notificationAppService).publish(eq(ProjectEventTypes.STAGE_CHANGED), any());
     }
 
     @Test
@@ -322,7 +362,8 @@ class ProjectGateAppServiceTest {
                 .hasMessageContaining(ProjectMessage.REJECT_REASON_REQUIRED.message());
 
         assertThat(confirmationCount()).isZero();
-        verifyNoInteractions(notificationAppService);
+        // 驳回未成立：无 SSE、无回流（#50）
+        verifyNoInteractions(notificationAppService, baInterviewAppService);
     }
 
     @Test

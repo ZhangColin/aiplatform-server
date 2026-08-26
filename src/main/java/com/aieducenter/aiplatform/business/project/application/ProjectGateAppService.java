@@ -41,7 +41,10 @@ import lombok.extern.slf4j.Slf4j;
  * Demo（A3 §2.3 前缀段自动）；G4 通过即收口（期 CLOSED，无交付段）。</p>
  *
  * <p>事务形态：留痕与期迁移一事务；SSE 在事务提交后发射（编排层发射制，
- * ADR-0001）；自动 Demo 起跑失败不回滚门决策（阶段已推进，失败经日志表达）。</p>
+ * ADR-0001）；自动 Demo 起跑失败不回滚门决策（阶段已推进，失败经日志表达）。
+ * G1 驳回触发 BA 续轮回流（#50）：驳回留痕落定后门操作内自动起 BA 续轮（意见
+ * 注入 prompt 续 BA 会话——澄清追问或直接修订 PRD 再 savePrd，门重新就绪，
+ * 往复至通过）；起跑失败不阻断驳回留痕（照「BA 起跑失败不回滚建项目」口径）。</p>
  */
 @Service
 @Slf4j
@@ -53,6 +56,7 @@ public class ProjectGateAppService {
     private final StageAdvanceService stageAdvanceService;
     private final OpenBugQueryPort openBugQueryPort;
     private final ProjectAgentTaskAppService agentTaskAppService;
+    private final BaInterviewAppService baInterviewAppService;
     private final ProjectQueryAppService queryAppService;
     private final PlatformNotificationAppService notificationAppService;
     private final ProjectKnowledgeAppService knowledgeAppService;
@@ -64,6 +68,7 @@ public class ProjectGateAppService {
                                  StageAdvanceService stageAdvanceService,
                                  OpenBugQueryPort openBugQueryPort,
                                  ProjectAgentTaskAppService agentTaskAppService,
+                                 BaInterviewAppService baInterviewAppService,
                                  ProjectQueryAppService queryAppService,
                                  PlatformNotificationAppService notificationAppService,
                                  ProjectKnowledgeAppService knowledgeAppService,
@@ -74,6 +79,7 @@ public class ProjectGateAppService {
         this.stageAdvanceService = stageAdvanceService;
         this.openBugQueryPort = openBugQueryPort;
         this.agentTaskAppService = agentTaskAppService;
+        this.baInterviewAppService = baInterviewAppService;
         this.queryAppService = queryAppService;
         this.notificationAppService = notificationAppService;
         this.knowledgeAppService = knowledgeAppService;
@@ -152,6 +158,7 @@ public class ProjectGateAppService {
     /**
      * 门驳回（reason 必填）：一律停留当前阶段（A3 §3——无「退回哪段」的问题），
      * 留痕落 {@code prj_confirmations}，SSE stage-changed(rejected + reason)。
+     * G1（BA 段）驳回落留痕后自动起 BA 续轮（#50 驳回回流；起跑失败不阻断留痕）。
      *
      * @throws ApplicationException PRJ_001 项目不存在；PRJ_011 reason 空白；
      *                              PRJ_009 当前阶段无确认门；PRJ_010 无 OPEN 期
@@ -170,11 +177,25 @@ public class ProjectGateAppService {
                 confirmationRepository.save(Confirmation.rejectOf(iteration.getId(), kind,
                         RequestContext.getUserId(), reason)));
 
+        String strippedReason = reason.strip();
         notificationAppService.publish(ProjectEventTypes.STAGE_CHANGED,
-                StageChangedPayload.rejected(projectId, iteration.getStage(), reason.strip()));
+                StageChangedPayload.rejected(projectId, iteration.getStage(), strippedReason));
 
         // A5 §1 摄取（事务提交后，失败降级不炸）：驳回 reason 是验收反馈纪要来源
         knowledgeAppService.indexFeedback(projectId, confirmation);
+
+        // #50 驳回回流：G1（需求确认）驳回 → 自动起 BA 续轮（意见注入 prompt 续
+        // BA 会话：意见不清先澄清回问答循环，或修订 PRD 再 savePrd → 门重新就绪，
+        // 往复至通过）。起跑失败不阻断驳回留痕（失败经日志表达——意见仍可经自由
+        // 补充通道手动进 BA 会话）。
+        if (ProjectMainChain.STAGE_BA.equals(current.name())) {
+            try {
+                baInterviewAppService.runInterviewTurn(projectId,
+                        RolePreset.rejectReflowPrompt(strippedReason));
+            } catch (RuntimeException e) {
+                log.warn("项目 {} 驳回后 BA 续轮起跑失败（驳回留痕不受影响）", projectId, e);
+            }
+        }
         return queryAppService.detail(projectId);
     }
 
