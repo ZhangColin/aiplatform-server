@@ -1,5 +1,6 @@
 package com.aieducenter.aiplatform.business.project.application;
 
+import java.util.Map;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
@@ -14,12 +15,16 @@ import com.aieducenter.aiplatform.base.chatagent.application.ChatAgentAppService
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentCommand;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentReply;
 import com.aieducenter.aiplatform.base.chatagent.domain.error.ChatAgentMessage;
+import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -38,6 +43,9 @@ class ProjectNamingAppServiceTest {
 
     @Mock
     private ProjectRepository projectRepository;
+
+    @Mock
+    private PlatformNotificationAppService notificationAppService;
 
     @Test
     void given_wrapped_reply_when_name_async_then_sanitized_name_renames_placeholder() {
@@ -150,12 +158,60 @@ class ProjectNamingAppServiceTest {
         verify(projectRepository, never()).save(any());
     }
 
+    // ---------- #52：取名落定的 project-renamed 触达 ----------
+
+    @Test
+    void given_placeholder_when_name_lands_then_project_renamed_published() {
+        // 取名落库（renameIfPlaceholder 为真）→ 发 project-renamed（projectId +
+        // projectName）：前端失效 projects 域重拉，停留中的页面上名字静默浮现
+        Project project = placeholderProject();
+        when(projectRepository.findById(49L)).thenReturn(Optional.of(project));
+        when(chatAgentAppService.converseSilently(any()))
+                .thenReturn(new ChatAgentReply("run-n", "「品牌官网」"));
+        ProjectNamingAppService service = service();
+
+        service.nameAsync(49L, "做一个高端家具品牌官网");
+
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(notificationAppService).publish(eq(ProjectEventTypes.PROJECT_RENAMED),
+                payload.capture());
+        assertThat(payload.getValue()).containsOnly(
+                Map.entry("projectId", "49"), Map.entry("projectName", "品牌官网"));
+    }
+
+    @Test
+    void given_user_renamed_when_name_not_applied_then_no_event() {
+        // 守卫不覆写 = 无变化无事件（落位守卫不发——改名端点兜底）
+        Project project = placeholderProject();
+        project.rename("我起的名字");
+        when(projectRepository.findById(50L)).thenReturn(Optional.of(project));
+        when(chatAgentAppService.converseSilently(any()))
+                .thenReturn(new ChatAgentReply("run-n", "LLM 的名字"));
+        ProjectNamingAppService service = service();
+
+        service.nameAsync(50L, "做一个官网");
+
+        verify(notificationAppService, never()).publish(anyString(), anyMap());
+    }
+
+    @Test
+    void given_converse_failure_when_name_fails_then_no_event() {
+        // 取名失败保占位（红线）→ 不发事件（失败静默是既有设计，无「取名挂了」误报）
+        when(chatAgentAppService.converseSilently(any()))
+                .thenThrow(new DomainException(ChatAgentMessage.CONVERSE_FAILED, "缺 API key"));
+        ProjectNamingAppService service = service();
+
+        service.nameAsync(51L, "做一个官网");
+
+        verify(notificationAppService, never()).publish(anyString(), anyMap());
+    }
+
     // ---------- 测试数据 ----------
 
     /** 直通执行器：nameAsync 提交即同步执行（异步语义在编排测试覆盖）。 */
     private ProjectNamingAppService service() {
         return new ProjectNamingAppService(chatAgentAppService, projectRepository,
-                Runnable::run);
+                notificationAppService, Runnable::run);
     }
 
     private Project placeholderProject() {

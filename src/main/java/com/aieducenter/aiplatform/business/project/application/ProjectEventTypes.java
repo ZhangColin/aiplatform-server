@@ -27,6 +27,13 @@ public final class ProjectEventTypes {
      */
     public static final String DOCUMENT_UPDATED = "document-updated";
 
+    /**
+     * 项目已改名（#52 触达补口）：异步取名落库成功（顶替占位名）后发射——载荷
+     * projectId + projectName，前端失效 projects 域重拉（停留中的页面名字静默浮现，
+     * ChatGPT 式）。守卫不覆写（用户已改名/取名已完成）与取名失败保占位均不发。
+     */
+    public static final String PROJECT_RENAMED = "project-renamed";
+
     // ---------- payload 契约键（SSE事件清单·通道一） ----------
 
     /** 关联字段（通知通道 streamId 同值）。 */

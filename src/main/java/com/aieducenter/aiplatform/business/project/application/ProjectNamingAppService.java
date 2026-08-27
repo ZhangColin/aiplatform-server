@@ -14,6 +14,7 @@ import com.aieducenter.aiplatform.base.chatagent.application.ChatAgentAppService
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentCommand;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.ChatAgentReply;
 import com.aieducenter.aiplatform.base.chatagent.domain.model.UsageContext;
+import com.aieducenter.aiplatform.base.eventhub.application.PlatformNotificationAppService;
 import com.aieducenter.aiplatform.business.project.domain.aggregate.Project;
 import com.aieducenter.aiplatform.business.project.domain.repository.ProjectRepository;
 
@@ -22,10 +23,11 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * 项目取名服务（#39，grilling 定案「异步取名」）：创建即落占位名
  * {@link Project#PLACEHOLDER_NAME}，创建后经对话智能体基座的一次静默轻调用
- * （AgentScope，{@link ChatAgentAppService#converseSilently}——无 SSE 帧、无等待点，
- * 前端进面板拉详情自然见到新名，ChatGPT 式静默刷新）据 requirement 生成项目名并
- * 落位。⚠️ 红线：禁止字符串截取派生——净化不过关/引擎失败/超时一律保占位
- * （经改名端点 #43 可改），绝无「requirement 前 N 字符」兜底。
+ * （AgentScope，{@link ChatAgentAppService#converseSilently}——无 SSE 帧、无等待点）
+ * 据 requirement 生成项目名并落位；落库即发 {@code project-renamed}（#52 触达补口：
+ * 前端失效 projects 域重拉，停留中的页面上名字静默浮现，ChatGPT 式——守卫不覆写
+ * 与失败保占位均不发）。⚠️ 红线：禁止字符串截取派生——净化不过关/引擎失败/超时
+ * 一律保占位（经改名端点 #43 可改），绝无「requirement 前 N 字符」兜底。
  *
  * <p>时机与线程：创建响应不等取名（REST 即时返回）；本服务自持单线程执行器
  * fire-and-forget——不占 chatagent 续跑闸（BA 开场问答卡不被取名排队拖慢），串行
@@ -58,6 +60,7 @@ public class ProjectNamingAppService implements DisposableBean {
 
     private final ChatAgentAppService chatAgentAppService;
     private final ProjectRepository projectRepository;
+    private final PlatformNotificationAppService notificationAppService;
     /** 提交通道（生产=虚拟线程池；测试=直通同步）。 */
     private final Executor executor;
     /** 生产执行器生命周期（测试注入直通道时为 null）。 */
@@ -65,9 +68,11 @@ public class ProjectNamingAppService implements DisposableBean {
 
     @Autowired
     public ProjectNamingAppService(ChatAgentAppService chatAgentAppService,
-            ProjectRepository projectRepository) {
+            ProjectRepository projectRepository,
+            PlatformNotificationAppService notificationAppService) {
         this.chatAgentAppService = chatAgentAppService;
         this.projectRepository = projectRepository;
+        this.notificationAppService = notificationAppService;
         this.ownedExecutor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "project-naming");
             thread.setDaemon(true);
@@ -78,9 +83,11 @@ public class ProjectNamingAppService implements DisposableBean {
 
     /** 测试便利构造（直通道，无生命周期）。 */
     ProjectNamingAppService(ChatAgentAppService chatAgentAppService,
-            ProjectRepository projectRepository, Executor executor) {
+            ProjectRepository projectRepository,
+            PlatformNotificationAppService notificationAppService, Executor executor) {
         this.chatAgentAppService = chatAgentAppService;
         this.projectRepository = projectRepository;
+        this.notificationAppService = notificationAppService;
         this.executor = executor;
         this.ownedExecutor = null;
     }
@@ -121,6 +128,11 @@ public class ProjectNamingAppService implements DisposableBean {
         projectRepository.findById(projectId).ifPresent(project -> {
             if (project.renameIfPlaceholder(generated)) {
                 projectRepository.save(project);
+                // #52 触达补口：落定即广播（取名跑在自有执行器线程，save 自动提交后
+                // 发射即满足 ADR-0001「事务提交后发射」；projectId 即本方法入参）
+                notificationAppService.publish(ProjectEventTypes.PROJECT_RENAMED, Map.of(
+                        ProjectEventTypes.PROJECT_ID_FIELD, projectId.toString(),
+                        ProjectEventTypes.PROJECT_NAME_FIELD, project.getName()));
             } else {
                 log.info("项目 {} 已非占位名（用户改名或取名已完成），本次取名不覆写", projectId);
             }
