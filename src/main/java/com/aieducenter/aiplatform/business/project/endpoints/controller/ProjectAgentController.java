@@ -25,7 +25,8 @@ import com.aieducenter.aiplatform.business.project.application.dto.response.Proj
 /**
  * 项目智能体任务与等待点 REST 面（demo AgentController 的重写，B0 §2 片5）：
  * 下任务（角色卡 = 显式入参或阶段默认，SSE role-assigned → task-start → … →
- * task-finish）；等待点问答/权限答复（与开发平台共用同一套 wait 语义，A3 §5）。
+ * task-finish）；运行终止（票 #38 逃生口：wait-settled(cancelled) × N →
+ * task-finish(cancelled)）；等待点问答/权限答复（与开发平台共用同一套 wait 语义，A3 §5）。
  */
 @RestController
 @RequestMapping("/api/projects/{projectId}/agent")
@@ -51,6 +52,19 @@ public class ProjectAgentController {
             @PathVariable String projectId,
             @Valid @RequestBody ProjectAgentTaskCommand command) {
         return ApiResponse.ok(taskAppService.dispatchTask(parseId(projectId), command));
+    }
+
+    @PostMapping("/runs/{runId}/cancel")
+    @Operation(summary = "终止运行（工作台顶栏终止 / 审批卡终止任务逃生口）",
+            description = "终止一次进行中的 agent run（挂起等待点或在飞执行，含 BA 对话轮）。"
+                    + "runId 解析：该 run 名下等待点行优先、无则回退会话最近运行，均查无 → 404。"
+                    + "SSE 帧序：wait-settled(outcome=cancelled) × N → task-finish(finish=cancelled)"
+                    + "（平台权威终态帧，引擎自然帧照透）。best-effort 恒 200：已终态/重复终止空转不炸；"
+                    + "dsh 引擎不支持真终止（终止信号 no-op，平台帧照发）")
+    public ApiResponse<Void> cancelRun(@PathVariable String projectId,
+                                       @PathVariable String runId) {
+        taskAppService.cancelRun(parseId(projectId), runId);
+        return ApiResponse.ok();
     }
 
     @GetMapping("/waits")

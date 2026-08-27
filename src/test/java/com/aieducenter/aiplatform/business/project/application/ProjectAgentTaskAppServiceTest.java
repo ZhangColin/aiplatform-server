@@ -573,6 +573,29 @@ class ProjectAgentTaskAppServiceTest {
                 .doesNotContainKey("iterationId");
     }
 
+    // ---------- 运行终止（#38） ----------
+
+    @Test
+    void given_project_when_cancel_run_then_bridged_with_project_correlation() {
+        // 票 #38：寻址转底座 cancelRun（runId 解析/abort/收口/帧序在
+        // AgentTaskAppServiceTest 覆盖），projectId 关联随帧注入
+        Project project = persistedProject("opencode");
+
+        appService.cancelRun(project.getId(), "run-42");
+
+        verify(agentTaskAppService).cancelRun(Long.toString(project.getWorkspaceId()),
+                "run-42", Map.of(AgentStreamAppService.PROJECT_FIELD,
+                        Long.toString(project.getId())));
+        verifyNoInteractions(streamAppService, knowledgePort, baInterviewAppService);
+    }
+
+    @Test
+    void given_missing_project_when_cancel_run_then_prj_001() {
+        assertThatThrownBy(() -> appService.cancelRun(999L, "run-42"))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(ProjectMessage.PROJECT_NOT_FOUND.message());
+    }
+
     // ---------- 测试数据 ----------
 
     private Project persistedProject(String engine) {

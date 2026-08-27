@@ -14,8 +14,10 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.command.Agent
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentQuestionReplyCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.AgentTaskDispatchCommand;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.SettleResult;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
+import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentWait;
 import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEvent;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
@@ -23,6 +25,7 @@ import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentTaskCommand
 import com.aieducenter.aiplatform.base.agentengine.domain.model.RunResult;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
 import com.aieducenter.aiplatform.base.agentengine.domain.repository.AgentSessionRepository;
+import com.aieducenter.aiplatform.base.agentengine.domain.repository.AgentWaitRepository;
 import com.aieducenter.aiplatform.base.agentengine.infrastructure.WorkspaceHandleClient;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 
@@ -38,6 +41,10 @@ import lombok.extern.slf4j.Slf4j;
  * 流桥拦截 {@code wait-raised} 落库不透传（SSE 发射归编排层桥接，票 #22）、
  * run 终态事件（task-finish/error，含超时）联动其 PENDING 等待点 → EXPIRED。</p>
  *
+ * <p>运行终止（票 #38）：{@link #cancelRun}（用户显式终止）与 {@link #terminateRun}
+ * （deny cap 平台终止共用路径）——abort + 收口 + 平台权威终态帧（wait-settled
+ * (outcome=cancelled) 先于 task-finish(finish=cancelled)，帧序硬约束）。</p>
+ *
  * <p>事务形态：引擎交互（HTTP / docker exec，秒到分钟级）不进事务；会话登记是
  * 单行落库（仓储自带事务）。片5 business.project 接管业务编排时经
  * {@code CodingAgentAdapter} 端口直调（systemPrompt/modelId/UsageContext 由业务层
@@ -51,6 +58,8 @@ public class AgentTaskAppService {
     private final AgentEngineRegistry registry;
     private final EngineConfigAppService engineConfigAppService;
     private final AgentSessionRepository sessionRepository;
+    private final AgentWaitRepository waitRepository;
+    private final WaitResponderDirectory responders;
     private final AgentStreamAppService streamAppService;
     private final AgentWaitAppService waitAppService;
 
@@ -58,12 +67,16 @@ public class AgentTaskAppService {
                                AgentEngineRegistry registry,
                                EngineConfigAppService engineConfigAppService,
                                AgentSessionRepository sessionRepository,
+                               AgentWaitRepository waitRepository,
+                               WaitResponderDirectory responders,
                                AgentStreamAppService streamAppService,
                                AgentWaitAppService waitAppService) {
         this.workspaceHandleClient = workspaceHandleClient;
         this.registry = registry;
         this.engineConfigAppService = engineConfigAppService;
         this.sessionRepository = sessionRepository;
+        this.waitRepository = waitRepository;
+        this.responders = responders;
         this.streamAppService = streamAppService;
         this.waitAppService = waitAppService;
     }
@@ -175,7 +188,86 @@ public class AgentTaskAppService {
         return registry.require(engine).adapter().health(handle);
     }
 
+    /**
+     * 终止运行（票 #38 运行终止，工作台顶栏「终止」/审批卡「终止任务」逃生口）：
+     * runId 解析（该 run 名下等待点行自带 sessionId 优先 → 会话 lastRunId 回退，
+     * 工作区须相符）→ {@link #terminateRun}。查无 AGT_011（404）；best-effort——
+     * 重复终止空转 200（无 PENDING 无 wait-settled 帧，平台终态帧同值重发）。
+     * 关联字段（如 projectId）随帧注入 agent 流 payload，缺省即底座 workspaceId 形态。
+     */
+    public void cancelRun(String workspaceId, String runId, Map<String, Object> correlation) {
+        WorkspaceHandle handle = workspaceHandleClient.handleOf(workspaceId);
+        AgentSession session = resolveRunSession(handle, runId);
+        log.info("[agentengine] 运行终止 runId={} session={} engine={}（工作区 {}）",
+                runId, session.getSessionId(), session.getEngine(), workspaceId);
+        terminateRun(workspaceId, session.getEngine(), session.getSessionId(), runId,
+                correlation);
+    }
+
+    /**
+     * 平台终止路径（票 #38 统一）：abort + 等待点收口 + 平台权威终态帧——cancelRun
+     * 与 deny cap 平台终止（{@link SettleResult#denyCapped()} 的
+     * 调用方接续）共用。帧序硬约束：wait-settled(outcome=cancelled) × N 在前、
+     * task-finish(finish=cancelled) 在后（前端 wait-settled 一律把 run 拉回 running，
+     * 终态帧必须最后落地）。abort 引擎交互失败不外抛（best-effort 恒成行，dsh no-op
+     * 同形态）；引擎自然帧照透不抑制。
+     */
+    public void terminateRun(String workspaceId, String engine, String sessionId, String runId,
+                             Map<String, Object> correlation) {
+        WorkspaceHandle handle = workspaceHandleClient.handleOf(workspaceId);
+        boolean aborted = false;
+        try {
+            aborted = responders.require(engine).abort(handle, sessionId);
+        } catch (RuntimeException e) {
+            log.warn("[agentengine] run {} 平台终止引擎交互失败：{}", runId, e.getMessage());
+        }
+        if (!aborted) {
+            log.warn("[agentengine] run {} 平台终止未生效（引擎侧无运行/终止失败/dsh 不支持）",
+                    runId);
+        }
+        for (WaitPointResponse closed : waitAppService.expireRunReturning(runId)) {
+            streamAppService.publish(AgentEventTypes.WAIT_SETTLED, withAddressing(Map.of(
+                    AgentStreamAppService.RUN_FIELD, runId,
+                    AgentEventTypes.WAIT_ID_FIELD, closed.waitId(),
+                    AgentEventTypes.WAIT_OUTCOME_FIELD, AgentEventTypes.OUTCOME_CANCELLED),
+                    workspaceId, correlation));
+        }
+        streamAppService.publish(AgentEventTypes.TASK_FINISH, withAddressing(Map.of(
+                AgentStreamAppService.RUN_FIELD, runId,
+                AgentEventTypes.SESSION_FIELD, sessionId,
+                AgentEventTypes.ENGINE_FIELD, engine,
+                AgentEventTypes.FINISH_FIELD, AgentEventTypes.FINISH_CANCELLED),
+                workspaceId, correlation));
+    }
+
     // ---------- 内部 ----------
+
+    /**
+     * 运行终止的 runId 解析：等待点行优先（行自带 sessionId，挂起 run 常态）→
+     * {@code AgentSession.lastRunId} 回退（在飞无等待点 run，含 BA 对话轮）。两条
+     * 路径都要求解析结果属于该工作区（否则 AGT_011，防跨项目寻址误终止）；
+     * lastRunId 已被更新 run 覆盖时不做防御——abort 是会话粒度，终止该会话当前
+     * 执行即语义（票 #38 grilling 定案）。
+     */
+    private AgentSession resolveRunSession(WorkspaceHandle handle, String runId) {
+        long workspaceId = handle.workspaceId().id();
+        List<AgentWait> runWaits = waitRepository.findByRunId(runId);
+        if (!runWaits.isEmpty()) {
+            String sessionId = runWaits.stream()
+                    .filter(wait -> wait.getWorkspaceId() == workspaceId)
+                    .map(AgentWait::getSessionId)
+                    .findFirst()
+                    .orElseThrow(AgentTaskAppService::runNotFound);
+            return sessionRepository.findBySessionId(sessionId)
+                    .orElseThrow(AgentTaskAppService::runNotFound);
+        }
+        return sessionRepository.findByWorkspaceIdAndLastRunId(workspaceId, runId)
+                .orElseThrow(AgentTaskAppService::runNotFound);
+    }
+
+    private static ApplicationException runNotFound() {
+        return new ApplicationException(AgentEngineMessage.RUN_NOT_FOUND);
+    }
 
     /**
      * agent 流桥：适配器回调透传（payload 已带 runId；补底座中性寻址 workspaceId，

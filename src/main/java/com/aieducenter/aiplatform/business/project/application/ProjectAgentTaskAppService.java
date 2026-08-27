@@ -182,6 +182,19 @@ public class ProjectAgentTaskAppService {
     }
 
     /**
+     * 运行终止（票 #38，工作台顶栏「终止」/审批卡「终止任务」逃生口）：寻址转
+     * 底座 cancelRun（runId 解析——等待点行优先 / lastRunId 回退，查无 404 AGT_011），
+     * projectId 关联随帧注入。SSE 帧序（底座发射）：wait-settled(outcome=cancelled) × N
+     * → task-finish(finish=cancelled)（平台权威终态帧，引擎自然帧照透）。best-effort：
+     * 已终态/重复终止 200 空转，不炸。
+     */
+    public void cancelRun(Long projectId, String runId) {
+        Project project = requireProject(projectId);
+        agentTaskAppService.cancelRun(Long.toString(project.getWorkspaceId()), runId,
+                Map.of(AgentStreamAppService.PROJECT_FIELD, Long.toString(projectId)));
+    }
+
+    /**
      * Demo 会话寻址（#46）：工作区最近一次<b>本项目引擎</b>的会话（新起在前取首）。
      * DEMO 段引擎会话的常态唯一来源是自动 Demo run 与历次修正 run；同期手动他角色
      * 任务属边缘——引擎过滤兜住跨引擎误续（同引擎误续仍在同工作区上下文内，无害）。

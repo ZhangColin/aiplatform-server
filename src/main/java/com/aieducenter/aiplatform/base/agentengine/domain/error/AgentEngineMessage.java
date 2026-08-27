@@ -27,7 +27,10 @@ public enum AgentEngineMessage implements CodeMessage {
     /** 后台切换入参不在注册表（票 #42）：PUT 值校验，400——区别于寻址语义的 404 AGT_001。 */
     ENGINE_CONFIG_UNKNOWN(400, "AGT_009", "未知的开发智能体引擎"),
 
-    ENGINE_CONFIG_FIELDS_INCOMPLETE(400, "AGT_010", "引擎配置字段不完整");
+    ENGINE_CONFIG_FIELDS_INCOMPLETE(400, "AGT_010", "引擎配置字段不完整"),
+
+    /** 运行不可寻址（票 #38 运行终止）：runId 名下无等待点行且无会话最近运行匹配（或跨工作区）。 */
+    RUN_NOT_FOUND(404, "AGT_011", "agent 运行不存在");
 
     private final int httpStatus;
     private final String code;

@@ -50,14 +50,16 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 | `knowledge-retrieved` | 平台 | `projectId` `runId` `items` | 沉淀助手注入；items = `[{kind, projectName, title, snippet?}]`（kind/projectName = 来源项目，命中可见）——[A5 票 #11](https://github.com/ZhangColin/aiplatform-server/issues/11) 扩展 |
 | `session-created` | 平台 | `projectId` `runId` `sessionId` `engine?` | 会话建立 |
 | `error` | 平台 | `projectId` `runId` `message` | 运行失败 |
-| `task-finish` | 平台 | `projectId` `runId` `sessionId` `finish` | 运行结束 |
+| `task-finish` | 平台 | `projectId` `runId` `sessionId` `finish` | 运行结束（finish = 引擎结煞语 end/error；`cancelled` = 平台终止权威帧——[票 #38](https://github.com/ZhangColin/aiplatform-server/issues/38) 新增值） |
 | `wait-raised` | 平台 | `projectId` `runId` `waitId` `kind` `summary` | 等待点出现（kind=QUESTION/PERMISSION；summary 为适配器提取的中性短文本）——[A1 票 #5](https://github.com/ZhangColin/aiplatform-server/issues/5) 新增 |
-| `wait-settled` | 平台 | `projectId` `runId` `waitId` `outcome` | 等待点关闭（outcome=answered/approved/denied/deferred）——替换原 `questions-answered` / `permission-replied` |
+| `wait-settled` | 平台 | `projectId` `runId` `waitId` `outcome` | 等待点关闭（outcome=answered/approved/denied/deferred/cancelled——`cancelled` 为运行终止联动收口，[票 #38](https://github.com/ZhangColin/aiplatform-server/issues/38) 新增值）——替换原 `questions-answered` / `permission-replied` |
 | `text` | 引擎透传 | … + `data` | 最终文本 |
 | `reasoning` | 引擎透传 | … + `data` | 思考增量 |
 | `patch` | 引擎透传 | … + `data`（`path` `diff` `edits`） | 代码补丁 |
 | `tool` | 引擎透传 | … + `data` | 工具调用 |
 | `step-start` / `step-finish` | 引擎透传 | … + `data` | 步骤边界 |
+
+> **运行终止帧序（[#38](https://github.com/ZhangColin/aiplatform-server/issues/38)，硬约束）**：`POST /api/projects/{projectId}/agent/runs/{runId}/cancel`（用户终止）与 deny cap 平台终止共用一条平台终止路径（abort 引擎会话当前执行 + run 名下 PENDING 等待点收口 EXPIRED），SSE 帧序恒为 `wait-settled(outcome=cancelled) × N → task-finish(finish=cancelled)`——**顺序不可反**：前端 wait-settled 一律把 run status 拉回 running，终态帧必须最后落地（cancelled 粘性终态与后帧覆盖容忍归前端消费侧）。平台是 `cancelled` 终态帧的权威发射方，引擎自然帧照透不抑制（opencode abort 后引擎自发的 error/end 帧仍会出现，前端以平台帧为准）；dsh abort 恒 no-op，接受 best-effort（平台帧照发，引擎进程不真停）。幂等：重复终止 200 空转（无 PENDING 即无 wait-settled 帧，task-finish 同值重发无害）。BA/对话轨道（engine=agentscope）终止 = 平台关闸，无引擎帧，平台帧是唯一终态收口；在飞续跑被 interrupt 透出的引擎 error 帧照透。
 
 > **对话智能体事件桥（#45，ADR-0002）**：AgentScope HarnessAgent 的事件经单点映射表（`AgentscopeEventMapper`）转本表帧型，走同一通道同一信封——`engine=agentscope`，帧序 `task-start → session-created（sessionId 首见）→ 过程帧 → task-finish/error`。与 opencode 的差异：opencode 同步 message 整批回，`text` 帧是最终文本；AgentScope 流式回，`text`/`reasoning` 帧为增量（`data.delta`，前端按序拼接）。`tool` 帧 `data` 为 `{toolCallId, toolName, phase: start|end}`，`step-*` 对应模型调用边界。HITL 挂起→等待点（#48）：`RequireUserConfirmEvent` → `wait-raised`（同一帧型、同一落库口径——`kind` 按待确认工具判：`ask_user` 提问 = QUESTION，其余工具确认/敏感动作 = PERMISSION；QUESTION 的 `data.questions` 为 ask_user 入参的前端问答卡投影：`[{header, question, multiple(恒 false), custom(恒 true), options[{label}]}]`，与 opencode `pendingQuestions` 载荷形状对齐，`summary` 取问题文本）；挂起轮不发 `task-finish`（软终点，等 settle 续跑后收口），settle（答复/批准/拒绝）经 `AgentscopeWaitResponder` 重建 ConfirmResult 续跑（再挂起/终态同口径）；会话状态落 PostgreSQL（`cat_agent_state`），平台重启后按会话标识恢复续跑。BA 访谈（#40）：创建即开场、role-assigned 带 `engine=agentscope` 标双轨，自由补充遇在悬问答时输入即答复（settle 化解，帧续在原 run）。
 

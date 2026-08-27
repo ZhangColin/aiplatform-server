@@ -17,4 +17,7 @@ public interface AgentSessionRepository extends BaseRepository<AgentSession, Lon
 
     /** 工作区全部会话，新起在前（重启后可寻址的验证面）。 */
     List<AgentSession> findByWorkspaceIdOrderByCreatedAtDesc(Long workspaceId);
+
+    /** 最近运行寻址（票 #38 运行终止的 lastRunId 回退解析；工作区限定防跨区误终止）。 */
+    Optional<AgentSession> findByWorkspaceIdAndLastRunId(Long workspaceId, String lastRunId);
 }

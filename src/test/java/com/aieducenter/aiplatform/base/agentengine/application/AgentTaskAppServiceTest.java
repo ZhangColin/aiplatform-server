@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -23,6 +24,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.dto.command.Agent
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.AgentTaskResponse;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
+import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentWait;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.EngineConfig;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
@@ -33,7 +35,9 @@ import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentTaskCommand
 import com.aieducenter.aiplatform.base.agentengine.domain.model.RunResult;
 import com.aieducenter.aiplatform.base.agentengine.domain.model.UsageContext;
 import com.aieducenter.aiplatform.base.agentengine.domain.port.CodingAgentAdapter;
+import com.aieducenter.aiplatform.base.agentengine.domain.port.WaitResponder;
 import com.aieducenter.aiplatform.base.agentengine.domain.repository.AgentSessionRepository;
+import com.aieducenter.aiplatform.base.agentengine.domain.repository.AgentWaitRepository;
 import com.aieducenter.aiplatform.base.agentengine.domain.repository.EngineConfigRepository;
 import com.aieducenter.aiplatform.base.agentengine.infrastructure.WorkspaceHandleClient;
 import com.aieducenter.aiplatform.base.eventhub.domain.model.EventEnvelope;
@@ -48,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -65,6 +70,8 @@ class AgentTaskAppServiceTest {
 
     @Mock
     private AgentSessionRepository sessionRepository;
+    @Mock
+    private AgentWaitRepository waitRepository;
     @Mock
     private AgentWaitAppService waitAppService;
     @Mock
@@ -86,7 +93,9 @@ class AgentTaskAppServiceTest {
                 .thenReturn(Optional.of(EngineConfig.global("dsh")));
         AgentTaskAppService configured = new AgentTaskAppService(handleClient, registry,
                 new EngineConfigAppService(engineConfigRepository, registry),
-                sessionRepository, new AgentStreamAppService(hub), waitAppService);
+                sessionRepository, waitRepository,
+                new WaitResponderDirectory(java.util.List.of(stubAdapter, dsh), java.util.List.of()),
+                new AgentStreamAppService(hub), waitAppService);
         when(sessionRepository.findBySessionId("dsh-sid")).thenReturn(Optional.empty());
 
         AgentTaskResponse response = configured.dispatch(Long.toString(WORKSPACE_ID),
@@ -109,8 +118,9 @@ class AgentTaskAppServiceTest {
                 Duration.ofSeconds(600));
         appService = new AgentTaskAppService(handleClient,
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, new DshStubAdapter())),
-                engineConfigService(), sessionRepository, new AgentStreamAppService(hub),
-                waitAppService);
+                engineConfigService(), sessionRepository, waitRepository,
+                new WaitResponderDirectory(java.util.List.of(stubAdapter), java.util.List.of()),
+                new AgentStreamAppService(hub), waitAppService);
     }
 
     @AfterEach
@@ -229,8 +239,9 @@ class AgentTaskAppServiceTest {
         dsh.nextSessionId = "dsh-new";
         AgentTaskAppService dshService = new AgentTaskAppService(handleClient,
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, dsh)),
-                engineConfigService(), sessionRepository, new AgentStreamAppService(hub),
-                waitAppService);
+                engineConfigService(), sessionRepository, waitRepository,
+                new WaitResponderDirectory(java.util.List.of(stubAdapter, dsh), java.util.List.of()),
+                new AgentStreamAppService(hub), waitAppService);
         AgentSession existing = AgentSession.open(WORKSPACE_ID, "dsh", "dsh-old", "run-old");
         when(sessionRepository.findBySessionId("dsh-old")).thenReturn(Optional.of(existing));
         when(sessionRepository.findBySessionId("dsh-new")).thenReturn(Optional.empty());
@@ -440,6 +451,198 @@ class AgentTaskAppServiceTest {
         verify(waitAppService).expireRun("run-biz-1");
     }
 
+    // ---------- 运行终止（#38） ----------
+
+    @Test
+    void given_pending_waits_when_cancel_run_then_aborted_closed_and_frames_ordered() {
+        AgentWait wait = AgentWait.raise(WORKSPACE_ID, "ses_1", "run-1", WaitKind.PERMISSION,
+                "per_1", "执行 rm -rf", Map.of(), Instant.EPOCH);
+        when(waitRepository.findByRunId("run-1")).thenReturn(List.of(wait));
+        when(sessionRepository.findBySessionId("ses_1")).thenReturn(Optional.of(
+                AgentSession.open(WORKSPACE_ID, "opencode", "ses_1", "run-1")));
+        when(waitAppService.expireRunReturning("run-1"))
+                .thenReturn(List.of(WaitPointResponse.from(wait)));
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1",
+                Map.of("projectId", "proj-9"));
+
+        // 引擎终止（会话粒度）+ 等待点收口（PENDING → EXPIRED）
+        assertThat(stubAdapter.aborts).containsExactly("ses_1");
+        verify(waitAppService).expireRunReturning("run-1");
+        // 帧序硬约束：wait-settled(outcome=cancelled) 先于 task-finish(finish=cancelled)
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("wait-settled", "task-finish");
+        Map<String, Object> settledPayload = envelopePayload(sender.eventFramesOf(emitter).get(0));
+        assertThat(settledPayload).containsEntry("waitId", wait.getWaitId())
+                .containsEntry("outcome", "cancelled")
+                .containsEntry("runId", "run-1")
+                .containsEntry("workspaceId", Long.toString(WORKSPACE_ID))
+                .containsEntry("projectId", "proj-9");
+        Map<String, Object> finishPayload = envelopePayload(sender.eventFramesOf(emitter).get(1));
+        assertThat(finishPayload).containsEntry("finish", "cancelled")
+                .containsEntry("sessionId", "ses_1")
+                .containsEntry("engine", "opencode")
+                .containsEntry("runId", "run-1")
+                .containsEntry("projectId", "proj-9");
+    }
+
+    @Test
+    void given_in_flight_run_without_waits_when_cancel_then_resolved_via_last_run_id() {
+        // 在飞无等待点 run：回退 AgentSession.lastRunId 解析（BA 轨在飞轮同路径）
+        when(waitRepository.findByRunId("run-9")).thenReturn(List.of());
+        when(sessionRepository.findByWorkspaceIdAndLastRunId(WORKSPACE_ID, "run-9"))
+                .thenReturn(Optional.of(AgentSession.open(WORKSPACE_ID, "opencode", "ses_1",
+                        "run-9")));
+        when(waitAppService.expireRunReturning("run-9")).thenReturn(List.of());
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.cancelRun(Long.toString(WORKSPACE_ID), "run-9", null);
+
+        assertThat(stubAdapter.aborts).containsExactly("ses_1");
+        // 无收口行：只发平台权威终态帧（workspaceId 寻址——无关联字段即底座形态）
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("task-finish");
+        Map<String, Object> finishPayload = envelopePayload(sender.eventFramesOf(emitter).get(0));
+        assertThat(finishPayload).containsEntry("finish", "cancelled")
+                .containsEntry("workspaceId", Long.toString(WORKSPACE_ID))
+                .doesNotContainKey("projectId");
+    }
+
+    @Test
+    void given_unresolvable_run_when_cancel_then_404() {
+        when(waitRepository.findByRunId("run-none")).thenReturn(List.of());
+        when(sessionRepository.findByWorkspaceIdAndLastRunId(WORKSPACE_ID, "run-none"))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> appService.cancelRun(Long.toString(WORKSPACE_ID),
+                "run-none", null))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(AgentEngineMessage.RUN_NOT_FOUND.message());
+    }
+
+    @Test
+    void given_foreign_workspace_wait_rows_when_cancel_then_404() {
+        // 解析出的等待点不属于该工作区：同 404（防跨项目寻址误终止）
+        AgentWait foreign = AgentWait.raise(9999L, "ses_f", "run-1", WaitKind.PERMISSION,
+                "per_1", null, null, Instant.EPOCH);
+        when(waitRepository.findByRunId("run-1")).thenReturn(List.of(foreign));
+
+        assertThatThrownBy(() -> appService.cancelRun(Long.toString(WORKSPACE_ID),
+                "run-1", null))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(AgentEngineMessage.RUN_NOT_FOUND.message());
+        assertThat(stubAdapter.aborts).isEmpty();
+    }
+
+    @Test
+    void given_wait_rows_of_dead_session_when_cancel_then_404() {
+        // 等待点行解析出 sessionId 但会话行已亡（不可续跑同理）：不可终止
+        AgentWait wait = AgentWait.raise(WORKSPACE_ID, "ses_gone", "run-1", WaitKind.QUESTION,
+                "que_1", null, null, Instant.EPOCH);
+        when(waitRepository.findByRunId("run-1")).thenReturn(List.of(wait));
+        when(sessionRepository.findBySessionId("ses_gone")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> appService.cancelRun(Long.toString(WORKSPACE_ID),
+                "run-1", null))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining(AgentEngineMessage.RUN_NOT_FOUND.message());
+    }
+
+    @Test
+    void given_engine_abort_failure_when_cancel_then_best_effort_frames_still_emitted() {
+        // best-effort 恒 200：abort 抛异常不外抛，收口与平台终态帧照发（dsh no-op 同形态）
+        when(waitRepository.findByRunId("run-1")).thenReturn(List.of());
+        when(sessionRepository.findByWorkspaceIdAndLastRunId(WORKSPACE_ID, "run-1"))
+                .thenReturn(Optional.of(AgentSession.open(WORKSPACE_ID, "opencode", "ses_1",
+                        "run-1")));
+        when(waitAppService.expireRunReturning("run-1")).thenReturn(List.of());
+        stubAdapter.failAbort = true;
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1", null);
+
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("task-finish");
+    }
+
+    @Test
+    void given_repeat_cancel_when_no_pending_left_then_task_finish_reemitted_no_wait_frames() {
+        // 幂等空转：重复终止 200 不炸——无 PENDING 无 wait-settled 帧，平台终态帧重发同值
+        when(waitRepository.findByRunId("run-1")).thenReturn(List.of());
+        when(sessionRepository.findByWorkspaceIdAndLastRunId(WORKSPACE_ID, "run-1"))
+                .thenReturn(Optional.of(AgentSession.open(WORKSPACE_ID, "opencode", "ses_1",
+                        "run-1")));
+        when(waitAppService.expireRunReturning("run-1")).thenReturn(List.of());
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1", null);
+        appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1", null);
+
+        verify(waitAppService, times(2)).expireRunReturning("run-1");
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("task-finish", "task-finish");
+    }
+
+    @Test
+    void given_terminate_run_when_called_directly_then_abort_close_and_frames() {
+        // deny cap 平台终止与用户 cancel 共用路径（#38 统一）：同款 abort + 收口 + 帧发射
+        when(waitAppService.expireRunReturning("run-1"))
+                .thenReturn(List.of(new WaitPointResponse("wait-2",
+                        Long.toString(WORKSPACE_ID), "ses_1", "run-1", "que_2",
+                        WaitKind.QUESTION, null, WaitStatus.EXPIRED, null, "用哪个框架?",
+                        Map.of(), null, null, Instant.EPOCH, null)));
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        appService.terminateRun(Long.toString(WORKSPACE_ID), "opencode", "ses_1", "run-1",
+                Map.of("projectId", "proj-9"));
+
+        assertThat(stubAdapter.aborts).containsExactly("ses_1");
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("wait-settled", "task-finish");
+    }
+
+    @Test
+    void given_ba_suspended_round_when_cancel_then_wait_rows_resolved_and_frames() {
+        // BA/对话轨道（#38 覆盖）：engine=agentscope 经裸 WaitResponder 寻址（不进编码
+        // 引擎矩阵，ADR-0002 双轨分野）——挂起轮经等待点行解析，abort 关闸无引擎帧，
+        // 平台帧是唯一终态收口（wait-settled(cancelled) → task-finish(cancelled)）
+        RecordingBareResponder agentscope = new RecordingBareResponder();
+        AgentTaskAppService baService = new AgentTaskAppService(handleClient,
+                new AgentEngineRegistry(java.util.List.of(stubAdapter)),
+                engineConfigService(), sessionRepository, waitRepository,
+                new WaitResponderDirectory(java.util.List.of(stubAdapter),
+                        java.util.List.of(agentscope)),
+                new AgentStreamAppService(hub), waitAppService);
+        AgentWait pending = AgentWait.raise(WORKSPACE_ID, "ba-7", "run-ba", WaitKind.QUESTION,
+                "que_ba", "用哪个框架?", Map.of(), Instant.EPOCH);
+        when(waitRepository.findByRunId("run-ba")).thenReturn(List.of(pending));
+        when(sessionRepository.findBySessionId("ba-7")).thenReturn(Optional.of(
+                AgentSession.open(WORKSPACE_ID, "agentscope", "ba-7", "run-ba")));
+        when(waitAppService.expireRunReturning("run-ba"))
+                .thenReturn(List.of(WaitPointResponse.from(pending)));
+        var emitter = appServiceDelegate().subscribe(null, null, null);
+
+        baService.cancelRun(Long.toString(WORKSPACE_ID), "run-ba", null);
+
+        assertThat(agentscope.aborted).containsExactly("ba-7");
+        assertThat(sender.eventFramesOf(emitter)).extracting(
+                        frame -> ((EventEnvelope) frame.data()).type())
+                .containsExactly("wait-settled", "task-finish");
+        assertThat(envelopePayload(sender.eventFramesOf(emitter).get(0)))
+                .containsEntry("outcome", "cancelled")
+                .containsEntry("waitId", pending.getWaitId());
+        assertThat(envelopePayload(sender.eventFramesOf(emitter).get(1)))
+                .containsEntry("engine", "agentscope")
+                .containsEntry("sessionId", "ba-7")
+                .containsEntry("finish", "cancelled");
+    }
+
     // ---------- 替身与工具 ----------
 
     /** 通道订阅代理（emitter 断言用）。 */
@@ -469,7 +672,9 @@ class AgentTaskAppServiceTest {
 
         RunResult nextResult = RunResult.rejected("ignored");
         volatile boolean emitWaitRaised;
+        volatile boolean failAbort;
         final CopyOnWriteArrayList<AgentTaskCommand> received = new CopyOnWriteArrayList<>();
+        final CopyOnWriteArrayList<String> aborts = new CopyOnWriteArrayList<>();
 
         @Override
         public String engine() {
@@ -535,11 +740,42 @@ class AgentTaskAppServiceTest {
 
         @Override
         public boolean abort(WorkspaceHandle handle, String sessionId) {
-            return false;
+            if (failAbort) {
+                throw new IllegalStateException("引擎不可达（测试注入）");
+            }
+            aborts.add(sessionId);
+            return true;
         }
 
         @Override
         public boolean health(WorkspaceHandle handle) {
+            return true;
+        }
+    }
+
+    /** 对话智能体裸答复通道替身（非编码引擎，ADR-0002 双轨）：只关心 abort 寻址。 */
+    private static final class RecordingBareResponder implements WaitResponder {
+
+        final CopyOnWriteArrayList<String> aborted = new CopyOnWriteArrayList<>();
+
+        @Override
+        public String engine() {
+            return "agentscope";
+        }
+
+        @Override
+        public void replyQuestions(WorkspaceHandle handle, String sessionId, String requestId,
+                                   List<List<String>> answers) {
+        }
+
+        @Override
+        public void replyPermission(WorkspaceHandle handle, String sessionId,
+                                    String permissionId, boolean approve) {
+        }
+
+        @Override
+        public boolean abort(WorkspaceHandle handle, String sessionId) {
+            aborted.add(sessionId);
             return true;
         }
     }

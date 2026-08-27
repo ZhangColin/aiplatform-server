@@ -18,6 +18,7 @@ import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.core.exception.BaseCodeMessage;
 
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.WaitSettleCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.SettleResult;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentWait;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
@@ -40,8 +41,10 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>CC 避雷清单落点（A1 §1.3）：settle 前校验 status=PENDING 且会话可续跑，否则
  * AGT_007（409，陈旧批准非法跳变防护）；同 run 内 permission deny 计数 ≥ deny cap
- * （可配 {@code app.agent.wait-deny-cap}，默认 3）→ 平台终止运行（adapter abort）
- * + 记日志，防拒绝后换形式重试的审批循环；run 终态联动（{@link #expireRun}）与
+ * （可配 {@code app.agent.wait-deny-cap}，默认 3）→ 平台终止——<b>判定</b>在
+ * {@link SettleResult} 回报，<b>终止执行</b>归调用方经
+ * {@link AgentTaskAppService#terminateRun}（票 #38 与 cancelRun 共用：abort + 收口 +
+ * 平台终态帧），防拒绝后换形式重试的审批循环；run 终态联动（{@link #expireRun}）与
  * 复用会话残留清理（{@link #cancelSessionWaits}）由任务下发的流桥接线
  * （{@link AgentTaskAppService}）。</p>
  *
@@ -169,8 +172,8 @@ public class AgentWaitAppService {
      * 型内必填缺失抛 ApplicationException（BaseCodeMessage.BAD_REQUEST，全局异常
      * 处理的 400 面——IllegalArgumentException 无映射会落 500）。
      */
-    public void settle(String workspaceId, String waitId, WaitSettleCommand command) {
-        settle(workspaceId, switch (command.type()) {
+    public SettleResult settle(String workspaceId, String waitId, WaitSettleCommand command) {
+        return settle(workspaceId, switch (command.type()) {
             case WaitSettleCommand.TYPE_ANSWER -> {
                 if (command.answers() == null || command.answers().isEmpty()) {
                     throw new ApplicationException(BaseCodeMessage.BAD_REQUEST,
@@ -195,9 +198,12 @@ public class AgentWaitAppService {
     /**
      * 答复等待点：三型封闭（Answer/PermissionDecision/Deferred）。校验链——
      * 存在（AGT_006 404）→ PENDING（AGT_007 409）→ 会话可续跑（409）→ 引擎送达
-     * （失败 AGT_004 且保持 PENDING 可重试）→ 落库关闭。deny 达 cap 触发平台终止。
+     * （失败 AGT_004 且保持 PENDING 可重试）→ 落库关闭。deny 达 cap 的<b>判定</b>在
+     * 结果上回报（{@link SettleResult#denyCapped()}）——终止执行（abort + 收口 +
+     * 平台终态帧）归调用方经 {@link AgentTaskAppService#terminateRun} 走与 cancelRun
+     * 共用的路径，保证帧序 wait-settled 先于 task-finish（票 #38）。
      */
-    public void settle(String workspaceId, WaitSettlement settlement) {
+    public SettleResult settle(String workspaceId, WaitSettlement settlement) {
         AgentWait wait = requireSettleable(workspaceId, settlement.waitId());
         AgentSession session = requireResumableSession(wait);
         WorkspaceHandle handle =
@@ -224,10 +230,9 @@ public class AgentWaitAppService {
         }
         waitRepository.save(wait);
 
-        if (settlement instanceof WaitSettlement.PermissionDecision decision
-                && !decision.approve()) {
-            terminateIfDenyCapped(handle, session, wait.getRunId());
-        }
+        boolean denyCapped = settlement instanceof WaitSettlement.PermissionDecision decision
+                && !decision.approve() && denyCapReached(wait.getRunId());
+        return new SettleResult(WaitPointResponse.from(wait), session.getEngine(), denyCapped);
     }
 
     /**
@@ -236,8 +241,18 @@ public class AgentWaitAppService {
      */
     @Transactional
     public int expireRun(String runId) {
-        return closeAll(waitRepository.findByRunIdAndStatus(runId, WaitStatus.PENDING),
-                WaitStatus.EXPIRED, "run 终态联动");
+        return expireRunReturning(runId).size();
+    }
+
+    /**
+     * run 终止联动收口并回报收口行（票 #38：cancelRun / deny cap 平台终止共用）——
+     * PENDING 全部 EXPIRED 后返回行投影（wait-settled 帧发射用）。空表 = 无事发生。
+     */
+    @Transactional
+    public List<WaitPointResponse> expireRunReturning(String runId) {
+        List<AgentWait> pending = waitRepository.findByRunIdAndStatus(runId, WaitStatus.PENDING);
+        closeAll(pending, WaitStatus.EXPIRED, "run 终止联动");
+        return pending.stream().map(WaitPointResponse::from).toList();
     }
 
     /**
@@ -252,24 +267,20 @@ public class AgentWaitAppService {
 
     // ---------- 内部 ----------
 
-    /** deny cap 判定与平台终止（A1 §1.3 审批循环对策）：同 run 内 deny 累计 ≥ 阈值。 */
-    private void terminateIfDenyCapped(WorkspaceHandle handle, AgentSession session,
-                                       String runId) {
+    /**
+     * deny cap 判定（A1 §1.3 审批循环对策）：同 run 内 deny 累计 ≥ 阈值。只判不定——
+     * 终止执行（abort + 收口 + 平台终态帧）经 {@link AgentTaskAppService#terminateRun}
+     * 归调用方（票 #38 与 cancelRun 统一路径）。
+     */
+    private boolean denyCapReached(String runId) {
         long denies = waitRepository.countByRunIdAndStatusAndSettleOutcome(
                 runId, WaitStatus.SETTLED, WaitOutcome.DENIED);
         if (denies < denyCap) {
-            return;
+            return false;
         }
         log.warn("[agentengine] run {} 内权限拒绝累计 {} 次达上限（deny cap={}），平台终止运行",
                 runId, denies, denyCap);
-        boolean aborted = responders.require(session.getEngine())
-                .abort(handle, session.getSessionId());
-        if (!aborted) {
-            log.warn("[agentengine] run {} 平台终止未生效（引擎侧无运行或终止失败）", runId);
-        }
-        // 终止后 run 名下剩余 PENDING 等待点同步收口（不等异步终态事件的兜底）
-        closeAll(waitRepository.findByRunIdAndStatus(runId, WaitStatus.PENDING),
-                WaitStatus.EXPIRED, "deny cap 终止联动");
+        return true;
     }
 
     private void replyAnswers(WorkspaceHandle handle, AgentWait wait, AgentSession session,

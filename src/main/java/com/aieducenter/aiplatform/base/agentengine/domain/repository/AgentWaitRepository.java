@@ -32,6 +32,9 @@ public interface AgentWaitRepository extends BaseRepository<AgentWait, String> {
     /** 一次运行名下的等待点（终态联动 / deny 计数的锚）。 */
     List<AgentWait> findByRunIdAndStatus(String runId, WaitStatus status);
 
+    /** 一次运行名下的全部等待点（运行终止的 runId 解析锚，票 #38——行自带 sessionId）。 */
+    List<AgentWait> findByRunId(String runId);
+
     /** 一个会话名下的等待点（复用会话下发前的残留清理面）。 */
     List<AgentWait> findBySessionIdAndStatus(String sessionId, WaitStatus status);
 

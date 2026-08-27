@@ -97,8 +97,23 @@ public final class AgentEventTypes {
     /** 等待点稳定标识（wait-raised 补发 / wait-settled payload 用）。 */
     public static final String WAIT_ID_FIELD = "waitId";
 
-    /** 等待点关闭结果（answered / approved / denied / deferred）。 */
+    /** 等待点关闭结果（answered / approved / denied / deferred / cancelled）。 */
     public static final String WAIT_OUTCOME_FIELD = "outcome";
+
+    /** 通用寻址键：引擎会话标识（平台帧 payload；与 wait-raised 契约键同值单源）。 */
+    public static final String SESSION_FIELD = WAIT_SESSION_FIELD;
+
+    /** 通用自述键：承接运行的引擎名（平台帧 payload；与角色卡帧的引擎键同值单源）。 */
+    public static final String ENGINE_FIELD = ROLE_ENGINE_FIELD;
+
+    /** task-finish 的结煞语键（end / error / cancelled）。 */
+    public static final String FINISH_FIELD = "finish";
+
+    /** 平台终止的 task-finish 结煞语（票 #38：cancelRun / deny cap 平台权威终态帧）。 */
+    public static final String FINISH_CANCELLED = "cancelled";
+
+    /** 运行终止联动的 wait-settled outcome 值（票 #38——SSE 契约新值，WaitOutcome 枚举不动）。 */
+    public static final String OUTCOME_CANCELLED = "cancelled";
 
     private AgentEventTypes() {
     }

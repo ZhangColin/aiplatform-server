@@ -32,6 +32,7 @@ import com.aieducenter.aiplatform.business.project.domain.error.ProjectMessage;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.hamcrest.Matchers.nullValue;
@@ -117,6 +118,26 @@ class ProjectAgentControllerTest {
                 .andExpect(jsonPath("$.data[0].statusName").value("待处理"))
                 .andExpect(jsonPath("$.data[0].settleOutcomeName").value(nullValue()))
                 .andExpect(jsonPath("$.data[0].body.options[0]").value("React"));
+    }
+
+    @Test
+    void given_run_when_cancel_then_ok_void_body() throws Exception {
+        // 票 #38：终止运行端点——best-effort 恒 200 空转（响应体无 run 状态承诺）
+        performAsUser(post("/api/projects/100/agent/runs/run-9/cancel"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        verify(taskAppService).cancelRun(100L, "run-9");
+    }
+
+    @Test
+    void given_unresolvable_run_when_cancel_then_agt_011_404() throws Exception {
+        doThrow(new ApplicationException(
+                com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage.RUN_NOT_FOUND))
+                .when(taskAppService).cancelRun(100L, "run-none");
+
+        performAsUser(post("/api/projects/100/agent/runs/run-none/cancel"))
+                .andExpect(status().isNotFound());
     }
 
     @Test

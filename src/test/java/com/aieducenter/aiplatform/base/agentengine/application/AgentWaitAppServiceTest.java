@@ -19,6 +19,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import com.cartisan.core.exception.ApplicationException;
 
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.WaitSettleCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.SettleResult;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentSession;
 import com.aieducenter.aiplatform.base.agentengine.domain.aggregate.AgentWait;
@@ -309,16 +310,18 @@ class AgentWaitAppServiceTest {
     }
 
     @Test
-    void given_denies_below_cap_when_settle_deny_then_no_termination() {
-        assertDenyTerminates(2, 3, false);
+    void given_denies_below_cap_when_settle_deny_then_no_termination_signalled() {
+        assertDenyCapping(2, 3, false);
     }
 
     @Test
-    void given_denies_reach_cap_when_settle_deny_then_run_terminated_and_logged() {
-        assertDenyTerminates(3, 3, true);
+    void given_denies_reach_cap_when_settle_deny_then_termination_signalled_to_caller() {
+        // 票 #38：settle 只判不定——denyCapped=true 回报（含终止派发键 engine），
+        // abort/收口/帧归调用方接续 AgentTaskAppService.terminateRun（该处已测）
+        assertDenyCapping(3, 3, true);
     }
 
-    private void assertDenyTerminates(long totalDenies, int cap, boolean expectAbort) {
+    private void assertDenyCapping(long totalDenies, int cap, boolean expectCapped) {
         AgentWaitAppService service = new AgentWaitAppService(waitRepository,
                 sessionRepository,
                 new WaitResponderDirectory(List.of(adapter), List.of()), handleClient,
@@ -332,26 +335,16 @@ class AgentWaitAppServiceTest {
         when(waitRepository.countByRunIdAndStatusAndSettleOutcome(
                 eq("run-1"), eq(WaitStatus.SETTLED), eq(WaitOutcome.DENIED)))
                 .thenReturn(totalDenies);
-        AgentWait siblingPending = AgentWait.raise(WORKSPACE_ID, "ses_1", "run-1",
-                WaitKind.QUESTION, "que_9", null, null, NOW);
-        if (expectAbort) {
-            // 未达 cap 时终止路径提前返回，不查 run 名下 PENDING（避免无谓桩）
-            when(waitRepository.findByRunIdAndStatus("run-1", WaitStatus.PENDING))
-                    .thenReturn(List.of(siblingPending));
-        }
 
-        service.settle(WORKSPACE, new WaitSettlement.PermissionDecision(
-                wait.getWaitId(), false));
+        SettleResult result = service.settle(WORKSPACE,
+                new WaitSettlement.PermissionDecision(wait.getWaitId(), false));
 
         assertThat(wait.getSettleOutcome()).isEqualTo(WaitOutcome.DENIED);
-        if (expectAbort) {
-            // 平台终止运行：abort 派发到引擎 + run 名下剩余 PENDING 联动收口
-            assertThat(adapter.aborts).containsExactly("ses_1");
-            assertThat(siblingPending.getStatus()).isEqualTo(WaitStatus.EXPIRED);
-        } else {
-            assertThat(adapter.aborts).isEmpty();
-            assertThat(siblingPending.getStatus()).isEqualTo(WaitStatus.PENDING);
-        }
+        assertThat(result.settled().waitId()).isEqualTo(wait.getWaitId());
+        assertThat(result.engine()).isEqualTo("opencode"); // 终止派发键随结果回报
+        assertThat(result.denyCapped()).isEqualTo(expectCapped);
+        // 判定在底座、终止在调用方：settle 自身不 abort、不收口同 run 剩余等待点
+        assertThat(adapter.aborts).isEmpty();
     }
 
     // ---------- settle：Deferred ----------
@@ -430,6 +423,20 @@ class AgentWaitAppServiceTest {
 
         assertThat(appService.expireRun("run-x")).isZero();
         verify(waitRepository, never()).save(any());
+    }
+
+    @Test
+    void given_pending_when_expireRunReturning_then_closed_rows_reported() {
+        // 票 #38：cancelRun / deny cap 终止共用收口口——收口行回报（wait-settled 帧发射用）
+        AgentWait wait = raisedQuestion();
+        when(waitRepository.findByRunIdAndStatus("run-1", WaitStatus.PENDING))
+                .thenReturn(List.of(wait));
+
+        List<WaitPointResponse> closed = appService.expireRunReturning("run-1");
+
+        assertThat(closed).hasSize(1);
+        assertThat(closed.get(0).waitId()).isEqualTo(wait.getWaitId());
+        assertThat(wait.getStatus()).isEqualTo(WaitStatus.EXPIRED);
     }
 
     @Test

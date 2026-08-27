@@ -17,8 +17,10 @@ import org.springframework.web.bind.annotation.RestController;
 import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.web.response.ApiResponse;
 
+import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.WaitSettleCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.SettleResult;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessage;
 
@@ -35,9 +37,12 @@ import com.aieducenter.aiplatform.base.agentengine.domain.error.AgentEngineMessa
 public class AgentWaitController {
 
     private final AgentWaitAppService waitAppService;
+    private final AgentTaskAppService taskAppService;
 
-    public AgentWaitController(AgentWaitAppService waitAppService) {
+    public AgentWaitController(AgentWaitAppService waitAppService,
+                               AgentTaskAppService taskAppService) {
         this.waitAppService = waitAppService;
+        this.taskAppService = taskAppService;
     }
 
     @GetMapping
@@ -64,12 +69,18 @@ public class AgentWaitController {
             "approve":false}`（权限）/ `{"type":"deferred","note":"转任务"}`（转任务关闭）。
             校验：非 PENDING 或会话不可续跑 → 409；等待点不存在 → 404；引擎不可达 → 502
             （保持 PENDING 可重试）。同 run 权限拒绝累计达上限（默认 3，可配）触发平台
-            终止运行。""")
+            终止运行：abort + 等待点收口 + SSE wait-settled(outcome=cancelled) × N →
+            task-finish(finish=cancelled)（平台权威终态帧，#38 与运行终止端点共用路径）。""")
     public ApiResponse<Void> settle(
             @Parameter(description = "工作区 id") @PathVariable String workspaceId,
             @Parameter(description = "等待点稳定标识") @PathVariable String waitId,
             @Valid @RequestBody WaitSettleCommand command) {
-        waitAppService.settle(workspaceId, waitId, command);
+        SettleResult result = waitAppService.settle(workspaceId, waitId,
+                command);
+        if (result.denyCapped()) {
+            taskAppService.terminateRun(workspaceId, result.engine(),
+                    result.settled().sessionId(), result.settled().runId(), null);
+        }
         return ApiResponse.ok();
     }
 }

@@ -7,6 +7,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -15,8 +16,10 @@ import com.cartisan.core.context.RequestContext;
 import com.cartisan.core.exception.ApplicationException;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentTaskAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.command.WaitSettleCommand;
+import com.aieducenter.aiplatform.base.agentengine.application.dto.response.SettleResult;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitOutcome;
@@ -38,6 +41,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -62,6 +66,9 @@ class ProjectWaitAppServiceTest {
 
     @Mock
     private AgentWaitAppService agentWaitAppService;
+
+    @Mock
+    private AgentTaskAppService agentTaskAppService;
 
     @Mock
     private AgentStreamAppService streamAppService;
@@ -104,10 +111,7 @@ class ProjectWaitAppServiceTest {
     @Test
     void given_answer_settlement_when_settle_then_bridged_and_sse_outcome_answered() {
         stubProject();
-        when(agentWaitAppService.wait("wait-1")).thenReturn(Optional.of(
-                new WaitPointResponse("wait-1", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "que_1", WaitKind.QUESTION, null, WaitStatus.SETTLED, null, "用哪个框架?",
-                        Map.of(), WaitOutcome.ANSWERED, null, null, null)));
+        stubSettle("wait-1", WaitKind.QUESTION, WaitOutcome.ANSWERED, false);
 
         appService.settle(PROJECT_ID, "wait-1", new ProjectWaitSettleCommand(
                 WaitSettleCommand.TYPE_ANSWER, List.of(List.of("React")), null, null, null));
@@ -132,35 +136,49 @@ class ProjectWaitAppServiceTest {
     @Test
     void given_permission_deny_when_settle_then_sse_outcome_denied() {
         stubProject();
-        when(agentWaitAppService.wait("wait-2")).thenReturn(Optional.of(
-                new WaitPointResponse("wait-2", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "perm_1", WaitKind.PERMISSION, null, WaitStatus.SETTLED, null, "允许写文件?",
-                        Map.of(), WaitOutcome.DENIED, null, null, null)));
+        stubSettle("wait-2", WaitKind.PERMISSION, WaitOutcome.DENIED, false);
 
         appService.settle(PROJECT_ID, "wait-2", new ProjectWaitSettleCommand(
                 WaitSettleCommand.TYPE_PERMISSION, null, false, null, null));
 
-        // deny cap / 平台终止在底座（AgentWaitAppServiceTest）；此处只断言桥接与 SSE
+        // 未达 deny cap：无平台终止接续；此处只断言桥接与 SSE
         ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
         verify(streamAppService).publish(eq(AgentEventTypes.WAIT_SETTLED), payload.capture());
         assertThat(payload.getValue()).containsEntry("outcome", "denied");
+        verifyNoInteractions(agentTaskAppService);
         // 权限答复不摄取（A5 §1：QA 仅问答对）
         verifyNoInteractions(knowledgeAppService);
     }
 
     @Test
+    void given_deny_capped_settlement_when_settle_then_termination_after_settle_frame() {
+        // 票 #38：deny cap 平台终止与 cancelRun 共用路径（terminateRun），接续在
+        // 本层 settle 帧（wait-settled outcome=denied）之后——帧序硬约束
+        // wait-settled × N → task-finish(cancelled) 最后落地
+        stubProject();
+        stubSettle("wait-2", WaitKind.PERMISSION, WaitOutcome.DENIED, true);
+
+        appService.settle(PROJECT_ID, "wait-2", new ProjectWaitSettleCommand(
+                WaitSettleCommand.TYPE_PERMISSION, null, false, null, null));
+
+        InOrder inOrder = inOrder(streamAppService, agentTaskAppService);
+        inOrder.verify(streamAppService).publish(eq(AgentEventTypes.WAIT_SETTLED), any());
+        inOrder.verify(agentTaskAppService).terminateRun(
+                eq(Long.toString(WORKSPACE_ID)), eq("opencode"), eq("ses-1"), eq("run-1"),
+                eq(Map.of("projectId", Long.toString(PROJECT_ID))));
+    }
+
+    @Test
     void given_settle_without_outcome_when_settle_then_no_sse() {
         stubProject();
-        when(agentWaitAppService.wait("wait-3")).thenReturn(Optional.of(
-                new WaitPointResponse("wait-3", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "que_2", WaitKind.QUESTION, null, WaitStatus.PENDING, null, "用哪个框架?",
-                        Map.of(), null, null, null, null)));
+        stubSettle("wait-3", WaitKind.QUESTION, null, false);
 
         appService.settle(PROJECT_ID, "wait-3", new ProjectWaitSettleCommand(
                 WaitSettleCommand.TYPE_ANSWER, List.of(List.of("Vue")), null, null, null));
 
         // 无关闭结果（异常形态）不发射半成品事件
         verifyNoInteractions(streamAppService);
+        verifyNoInteractions(agentTaskAppService);
     }
 
     // ---------- Deferred 转任务（A1 §3.1，#27） ----------
@@ -171,6 +189,7 @@ class ProjectWaitAppServiceTest {
         stubProject();
         stubOwnerAndAssignee();
         stubWait(WaitOutcome.DEFERRED);
+        stubWaitSummary(); // 内容缺省 = 摘要 + 备注
 
         asOwner(() -> appService.settle(PROJECT_ID, "wait-1", deferredCommand(null, "转任务")));
 
@@ -238,22 +257,6 @@ class ProjectWaitAppServiceTest {
     }
 
     @Test
-    void given_settle_when_wait_missing_after_settle_then_no_sse() throws Exception {
-        stubProject();
-        stubOwnerAndAssignee();
-        when(agentWaitAppService.wait("wait-gone")).thenReturn(Optional.empty());
-
-        asOwner(() -> appService.settle(PROJECT_ID, "wait-gone",
-                new ProjectWaitSettleCommand(WaitSettleCommand.TYPE_DEFERRED, null, null,
-                        "转任务", deferredPayload("确认技术选型", null))));
-
-        verify(agentWaitAppService).settle(anyString(), eq("wait-gone"), any());
-        verify(deferredTaskPort).createFromWait(anyLong(), eq("wait-gone"), anyString(),
-                anyString(), anyLong());
-        verifyNoInteractions(streamAppService);
-    }
-
-    @Test
     void given_missing_project_when_list_or_settle_then_prj_001() {
         when(projectRepository.findById(PROJECT_ID)).thenReturn(Optional.empty());
 
@@ -292,10 +295,27 @@ class ProjectWaitAppServiceTest {
     }
 
     private void stubWait(WaitOutcome outcome) {
+        stubSettle("wait-1", WaitKind.QUESTION, outcome, false);
+    }
+
+    /** contentOf 的摘要读桩（转任务内容缺省时才走到）。 */
+    private void stubWaitSummary() {
         when(agentWaitAppService.wait("wait-1")).thenReturn(Optional.of(
                 new WaitPointResponse("wait-1", Long.toString(WORKSPACE_ID), "ses-1", "run-1",
-                        "que_1", WaitKind.QUESTION, null, WaitStatus.SETTLED, null, "用哪个框架?",
-                        Map.of(), outcome, null, null, null)));
+                        "que_1", WaitKind.QUESTION, null, WaitStatus.PENDING, null, "用哪个框架?",
+                        Map.of(), null, null, null, null)));
+    }
+
+    /** 底座 settle 结果桩（票 #38：SettleResult = 关闭投影 + 终止派发键 + deny cap 判定）。 */
+    private void stubSettle(String waitId, WaitKind kind, WaitOutcome outcome,
+                            boolean denyCapped) {
+        when(agentWaitAppService.settle(anyString(), eq(waitId), any())).thenReturn(
+                new SettleResult(
+                        new WaitPointResponse(waitId, Long.toString(WORKSPACE_ID), "ses-1",
+                                "run-1", kind == WaitKind.PERMISSION ? "perm_1" : "que_1",
+                                kind, null, WaitStatus.SETTLED, null, "用哪个框架?", Map.of(),
+                                outcome, null, null, null),
+                        "opencode", denyCapped));
     }
 
     private void asOwner(ThrowingRunnable call) throws Exception {
