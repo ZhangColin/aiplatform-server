@@ -41,7 +41,9 @@ import org.springframework.stereotype.Component;
  * 续跑）：平台进程内 HarnessAgent 一轮对话——AgentScope 事件经
  * {@link AgentscopeEventMapper}（映射表单点）转平台 agent 流帧逐个回调 sink
  * （task-start/session-created 开场、text/reasoning/tool/step-* 过程、
- * task-finish/error 收口，runId 锚定）；模型调用事件（ReAct 每迭代一条
+ * task-finish/error 收口，runId 锚定；#52 补口：runTurn 前的前段失败——模型解析/
+ * agent 工厂构建/工作区解析/会话首查——同样经 error 帧表达，异步轨道起跑失败不再
+ * 零帧死寂）；模型调用事件（ReAct 每迭代一条
  * ModelCallEnd）五桶累积，对话结束（含失败轮，已耗 token 如实计量）按命令的
  * usageContext 上报恰一条 UsageEvent（幂等键 chat-usage-{runId}[-{replyId}]，
  * engine=agentscope；归属为空不发明、零用量不报）。
@@ -115,35 +117,25 @@ public class AgentscopeChatAgentClient implements ChatAgentClient {
 
     @Override
     public ChatAgentReply converse(ChatAgentCommand command, Consumer<AgentEvent> sink) {
-        ModelRef modelRef = ModelRef.parse(command.modelString() != null
-                ? command.modelString() : properties.getDefaultModel());
-        String sysPrompt = command.systemPrompt() != null
-                ? command.systemPrompt() : properties.getDefaultSystemPrompt();
-        ChatAgentWorkspace workspace = resolveWorkspace(command.workspaceId());
-
-        HarnessAgent agent = factory.obtain(properties.getAgentName(), sysPrompt,
-                modelRef.toModelString(), workspace);
-        RuntimeContext ctx = runtimeContext(command.sessionId(), command.userId());
-
-        // 新 run 承接会话即复活续跑闸（deny cap 终止只作用于 run，不污染会话）
-        resumeGate.reopen(command.sessionId());
-        AgentscopeEventMapper mapper = new AgentscopeEventMapper(
-                command.runId(), command.sessionId(), ENGINE);
-        sink.accept(AgentscopeEventMapper.taskStart(command.runId(), command.prompt(),
-                modelRef.toModelString(), ENGINE));
-        if (firstSeen(command)) {
-            sink.accept(AgentscopeEventMapper.sessionCreated(
-                    command.runId(), command.sessionId(), ENGINE));
+        PreparedTurn prepared;
+        try {
+            prepared = prepareTurn(command, sink);
         }
-
-        TurnResult result = runTurn(agent, List.of(new UserMessage(command.prompt())), ctx, mapper,
+        catch (RuntimeException e) {
+            // #52 触达补口：前段（模型解析/agent 工厂构建/工作区解析/会话首查）失败原是
+            // 零帧区（续跑闸后台线程吞异常只记日志，用户只见死寂）——补发 error 帧
+            // （runId 锚定 = command 的）后照常上抛；converseSilently 的空 sink 无害丢弃，
+            // 取名路径失败仍静默保占位（红线不动）
+            sink.accept(AgentscopeEventMapper.error(command.runId(), e.getMessage()));
+            throw e;
+        }
+        TurnResult result = runTurn(prepared.agent(),
+                List.of(new UserMessage(command.prompt())), prepared.ctx(), prepared.mapper(),
                 command.runId(), USAGE_EVENT_PREFIX + command.runId(), command.usageContext(),
-                modelRef, sink, resumeContextOf(sysPrompt, modelRef.toModelString(),
-                        command.userId(), command.usageContext(),
-                        command.streamCorrelation()));
+                prepared.modelRef(), sink, prepared.resumeContext());
         if (result.error() != null) {
             throw new DomainException(ChatAgentMessage.CONVERSE_FAILED, result.error(),
-                    "runId=" + command.runId() + ", model=" + modelRef.toModelString());
+                    "runId=" + command.runId() + ", model=" + prepared.modelRef().toModelString());
         }
         return new ChatAgentReply(command.runId(), result.text());
     }
@@ -186,6 +178,42 @@ public class AgentscopeChatAgentClient implements ChatAgentClient {
 
     /** 一轮流的结果（挂起轮 text 为已生成部分；error 非空 = 失败）。 */
     private record TurnResult(String text, Throwable error) {
+    }
+
+    /** 前段产物（converse 开场准备至 runTurn 前：模型/agent/上下文/映射表/恢复私货）。 */
+    private record PreparedTurn(ModelRef modelRef, HarnessAgent agent, RuntimeContext ctx,
+            AgentscopeEventMapper mapper, Map<String, Object> resumeContext) {
+    }
+
+    /**
+     * 前段准备（#52 从 converse 抽出）：模型解析 → 工作区解析 → agent 工厂构建 →
+     * 续跑闸复活 → 开场帧（task-start / session-created 首见）。本段自身不做失败
+     * 处理——整段任一失败由 {@link #converse} 补发 error 帧后上抛。
+     */
+    private PreparedTurn prepareTurn(ChatAgentCommand command, Consumer<AgentEvent> sink) {
+        ModelRef modelRef = ModelRef.parse(command.modelString() != null
+                ? command.modelString() : properties.getDefaultModel());
+        String sysPrompt = command.systemPrompt() != null
+                ? command.systemPrompt() : properties.getDefaultSystemPrompt();
+        ChatAgentWorkspace workspace = resolveWorkspace(command.workspaceId());
+
+        HarnessAgent agent = factory.obtain(properties.getAgentName(), sysPrompt,
+                modelRef.toModelString(), workspace);
+        RuntimeContext ctx = runtimeContext(command.sessionId(), command.userId());
+
+        // 新 run 承接会话即复活续跑闸（deny cap 终止只作用于 run，不污染会话）
+        resumeGate.reopen(command.sessionId());
+        AgentscopeEventMapper mapper = new AgentscopeEventMapper(
+                command.runId(), command.sessionId(), ENGINE);
+        sink.accept(AgentscopeEventMapper.taskStart(command.runId(), command.prompt(),
+                modelRef.toModelString(), ENGINE));
+        if (firstSeen(command)) {
+            sink.accept(AgentscopeEventMapper.sessionCreated(
+                    command.runId(), command.sessionId(), ENGINE));
+        }
+        return new PreparedTurn(modelRef, agent, ctx, mapper,
+                resumeContextOf(sysPrompt, modelRef.toModelString(), command.userId(),
+                        command.usageContext(), command.streamCorrelation()));
     }
 
     /**

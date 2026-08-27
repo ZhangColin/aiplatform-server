@@ -269,6 +269,26 @@ class AgentscopeChatAgentClientTest {
     }
 
     @Test
+    void given_startup_failure_when_converse_then_error_frame_then_exception_reraised() {
+        // #52 触达补口：起跑失败（如缺 API key 致模型客户端构建抛 IllegalStateException）
+        // 原是 runTurn 前的零帧区（续跑闸后台线程吞异常，用户只见死寂）——前段失败也经
+        // sink 发 error 帧（runId 锚定 = command 的），异常照常上抛（吞不吞归续跑闸既有语义）
+        when(factory.obtain(any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("DeepSeek API key 未配置"));
+
+        List<AgentEvent> frames = new ArrayList<>();
+        assertThatThrownBy(() -> client.converse(command(null, null), frames::add))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("API key");
+
+        assertThat(frames.stream().map(AgentEvent::type))
+                .containsExactly(AgentEventTypes.ERROR);
+        assertThat(frames.get(0).payload()).containsEntry("runId", "run-1");
+        assertThat(frames.get(0).payload())
+                .containsEntry("message", "DeepSeek API key 未配置");
+    }
+
+    @Test
     void given_stream_error_after_model_call_when_converse_then_consumed_usage_still_reported() {
         when(factory.obtain(any(), any(), any(), any())).thenReturn(agent);
         when(agent.streamEvents(any(List.class), any(RuntimeContext.class)))
