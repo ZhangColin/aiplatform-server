@@ -147,13 +147,25 @@ public class AgentscopeChatAgentClient implements ChatAgentClient {
      * 终态联动）。计量幂等键带 replyId 后缀（挂起轮已报过 chat-usage-{runId}）。
      */
     public void resume(ChatAgentResume resume, Consumer<AgentEvent> sink) {
-        ModelRef modelRef = ModelRef.parse(resume.modelString() != null
-                ? resume.modelString() : properties.getDefaultModel());
-        ChatAgentWorkspace workspace = resolveWorkspace(resume.workspaceId());
-        String sysPrompt = resume.systemPrompt() != null
-                ? resume.systemPrompt() : properties.getDefaultSystemPrompt();
-        HarnessAgent agent = factory.obtain(properties.getAgentName(),
-                sysPrompt, modelRef.toModelString(), workspace);
+        ModelRef modelRef;
+        ChatAgentWorkspace workspace;
+        HarnessAgent agent;
+        try {
+            modelRef = ModelRef.parse(resume.modelString() != null
+                    ? resume.modelString() : properties.getDefaultModel());
+            workspace = resolveWorkspace(resume.workspaceId());
+            String sysPrompt = resume.systemPrompt() != null
+                    ? resume.systemPrompt() : properties.getDefaultSystemPrompt();
+            agent = factory.obtain(properties.getAgentName(),
+                    sysPrompt, modelRef.toModelString(), workspace);
+        }
+        catch (RuntimeException e) {
+            // #52 同口径补口（resume 原是零帧区）：前段失败发生在续跑闸后台线程
+            // （异常被吞只记日志），必须先发 error 帧（runId 锚定）再上抛——
+            // 缺 API key 致模型创建失败这类故障，用户侧有明确报错而非死寂
+            sink.accept(AgentscopeEventMapper.error(resume.runId(), e.getMessage()));
+            throw e;
+        }
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put(Msg.METADATA_CONFIRM_RESULTS, resume.confirmResults());

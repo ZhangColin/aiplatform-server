@@ -3,8 +3,12 @@ package com.aieducenter.aiplatform.base.eventhub.endpoints.controller;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+
+import java.io.IOException;
+
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -61,5 +65,16 @@ public class EventsController {
             @Parameter(description = "按项目过滤（与信封关联字段同名；缺省 = 全量）")
             @RequestParam(required = false) String projectId) {
         return appService.subscribe(projectId);
+    }
+
+    /**
+     * SSE 断连的 async error dispatch 静默（本地优先于全局 advice）：向已死连接写帧
+     * 失败经容器 async 机制 dispatch 回本端点，异常带原始业务栈（极易误读为业务 500）
+     * ——连接已断且响应已提交，无事可做，不落 ERROR 噪音。负载下 complete() 与
+     * dispatch 竞态会以 IllegalStateException（emitter 已完成）出现，一并静默。
+     */
+    @ExceptionHandler({IOException.class, IllegalStateException.class})
+    public void handleDisconnectedClient() {
+        // 空：SSE 是呈现通道，订阅方断开属正常生命周期（心跳/广播失败已逐出并 WARN）
     }
 }

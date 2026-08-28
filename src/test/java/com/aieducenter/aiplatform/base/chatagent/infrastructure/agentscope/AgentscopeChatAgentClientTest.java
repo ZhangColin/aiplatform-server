@@ -371,6 +371,32 @@ class AgentscopeChatAgentClientTest {
     }
 
     @Test
+    void given_resume_prepare_fails_when_resume_then_error_frame_emitted_and_rethrown() {
+        // #52 同口径（converse 已补，resume 原是零帧区）：缺 API key 致模型创建失败等
+        // 前段失败发生在续跑闸后台线程（异常被吞只记日志）——必须先发 error 帧
+        //（runId 锚定）再上抛，否则用户侧死寂（真机 ba- 会话 settle 续跑事故）
+        when(factory.obtain(any(), any(), any(), any())).thenThrow(new IllegalArgumentException(
+                "Failed to create model for id: deepseek:deepseek-v4-flash: "
+                        + "Environment variable DEEPSEEK_API_KEY is required to auto-create model"));
+
+        List<AgentEvent> frames = new ArrayList<>();
+        assertThatThrownBy(() -> client.resume(new AgentscopeChatAgentClient.ChatAgentResume(
+                "run-1", "s-1", "alice", null, "deepseek:deepseek-v4-flash", null, "reply-9",
+                List.of(new ConfirmResult(true,
+                        new ToolUseBlock("tc-1", "write_file", Map.of("path", "x")))),
+                "approved", null, Map.of("projectId", "42")), frames::add))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(frames.stream().map(AgentEvent::type))
+                .containsExactly(AgentEventTypes.ERROR);
+        assertThat(frames.get(0).payload())
+                .containsEntry("runId", "run-1")
+                .containsEntry("message",
+                        "Failed to create model for id: deepseek:deepseek-v4-flash: "
+                                + "Environment variable DEEPSEEK_API_KEY is required to auto-create model");
+    }
+
+    @Test
     void given_workspace_session_absent_when_converse_then_recorded_and_session_created() {
         givenStream(new TextBlockDeltaEvent("r-1", "b-1", "hi"));
         when(workspaceClient.handleOf("42")).thenReturn(WorkspaceHandle.dev(
