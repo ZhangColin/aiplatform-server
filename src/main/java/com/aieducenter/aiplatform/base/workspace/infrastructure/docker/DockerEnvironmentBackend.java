@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
@@ -58,6 +59,10 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
     private static final Duration RESOURCE_READY_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration PREVIEW_READY_TIMEOUT = Duration.ofSeconds(10);
 
+    /** docker daemon 地址池耗尽 stderr 特征（#57）：旧版「fully subnetted」/ 新版「non-overlapping ipv4 address pool」。 */
+    private static final String ADDRESS_POOL_SUBNETTED = "fully subnetted";
+    private static final String ADDRESS_POOL_IPV4_EXHAUSTED = "non-overlapping ipv4 address pool";
+
     private final SecureRandom random = new SecureRandom();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(2))
@@ -69,27 +74,38 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
             throw new ApplicationException(WorkspaceMessage.ENVIRONMENT_KIND_NOT_SUPPORTED);
         }
         String containerName = devContainer(workspaceId);
+        // 幂等预清：移除同名残留（只删不建，无需回滚）
         runSilently("docker", "rm", "-f", containerName);
-        runSilently("docker", "volume", "create", volumeOf(containerName));
-
-        ensureDevImage();
-        int[] ports = startDevContainer(workspaceId, containerName);
-        List<ProvisionedResource> resources = provisionResources(workspaceId, containerName);
-        return WorkspaceProvision.of(
-                WorkspaceHandle.dev(workspaceId, containerName, networkOf(workspaceId),
-                        ports[0], ports[1]),
-                resources.toArray(new ProvisionedResource[0]));
+        try {
+            runSilently("docker", "volume", "create", volumeOf(containerName));
+            ensureDevImage();
+            int[] ports = startDevContainer(workspaceId, containerName);
+            List<ProvisionedResource> resources = provisionResources(workspaceId, containerName);
+            return WorkspaceProvision.of(
+                    WorkspaceHandle.dev(workspaceId, containerName, networkOf(workspaceId),
+                            ports[0], ports[1]),
+                    resources.toArray(new ProvisionedResource[0]));
+        } catch (RuntimeException e) {
+            // 置备中途失败：已落定的容器/网络/卷无人回收即泄漏（#57），按命名约定级联回滚
+            log.error("[workspace] {} 置备失败，级联回滚已落定资源", workspaceId.value(), e);
+            cascadeCleanup(containerName, workspaceId);
+            throw e;
+        }
     }
 
     @Override
     public void destroyWorkspace(WorkspaceHandle handle) {
-        // 级联清理：容器（含 pg/redis，按命名约定派生）→ 网络 → 卷；全部尽力而为
-        runSilently("docker", "rm", "-f", handle.containerName());
-        runSilently("docker", "rm", "-f", pgContainer(handle.workspaceId()));
-        runSilently("docker", "rm", "-f", redisContainer(handle.workspaceId()));
-        runSilently("docker", "network", "rm", networkOf(handle.workspaceId()));
-        runSilently("docker", "volume", "rm", volumeOf(handle.containerName()));
-        runSilently("docker", "volume", "rm", volumeOf(pgContainer(handle.workspaceId())));
+        cascadeCleanup(handle.containerName(), handle.workspaceId());
+    }
+
+    /** 级联清理：容器（dev + pg/redis，按命名约定派生）→ 网络 → 卷；全部尽力而为。 */
+    private void cascadeCleanup(String containerName, WorkspaceId workspaceId) {
+        runSilently("docker", "rm", "-f", containerName);
+        runSilently("docker", "rm", "-f", pgContainer(workspaceId));
+        runSilently("docker", "rm", "-f", redisContainer(workspaceId));
+        runSilently("docker", "network", "rm", networkOf(workspaceId));
+        runSilently("docker", "volume", "rm", volumeOf(containerName));
+        runSilently("docker", "volume", "rm", volumeOf(pgContainer(workspaceId)));
     }
 
     @Override
@@ -328,16 +344,35 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
     private void run(String... cmd) {
         ExecResult r = runCapture(cmd);
         if (r.exitCode() != 0) {
-            throw new ApplicationException(WorkspaceMessage.ENVIRONMENT_OPERATION_FAILED,
-                    "命令失败: " + String.join(" ", cmd) + "\n" + r.stderr());
+            fail(String.join(" ", cmd), r);
         }
+    }
+
+    /** 命令失败归一化：地址池耗尽类 stderr 映射为可自诊断的 WSP_008，其余回落通用 500。 */
+    private void fail(String command, ExecResult result) {
+        if (isAddressPoolExhausted(result.stderr())) {
+            throw new ApplicationException(WorkspaceMessage.ENVIRONMENT_ADDRESS_POOL_EXHAUSTED);
+        }
+        throw new ApplicationException(WorkspaceMessage.ENVIRONMENT_OPERATION_FAILED,
+                "命令失败: " + command + "\n" + result.stderr());
+    }
+
+    /** docker 默认地址池耗尽（net-* 累积）识别：症状与根因不再隔着通用 500（#57）。 */
+    private boolean isAddressPoolExhausted(String stderr) {
+        if (stderr == null || stderr.isBlank()) {
+            return false;
+        }
+        String lower = stderr.toLowerCase(Locale.ROOT);
+        return lower.contains(ADDRESS_POOL_SUBNETTED)
+                || lower.contains(ADDRESS_POOL_IPV4_EXHAUSTED);
     }
 
     private void runSilently(String... cmd) {
         runCapture(cmd);
     }
 
-    private ExecResult runCapture(String... cmd) {
+    /** 测试子类覆写点：注入单条命令失败以验收回滚路径（#57 验收口径）。 */
+    protected ExecResult runCapture(String... cmd) {
         try {
             Process p = new ProcessBuilder(cmd).start();
             String out = new String(p.getInputStream().readAllBytes());

@@ -164,20 +164,39 @@ class DockerEnvironmentBackendTest {
         backend.destroyWorkspace(provision.handle());
         provision = null; // 已清理，tearDown 不再兜底
 
-        String id = workspaceId.value();
-        List<String> gone = List.of(
-                "ws-" + id + "-dev", "pg-" + id, "rd-" + id, "net-" + id,
-                "vol-ws-" + id + "-dev", "vol-pg-" + id);
-        gone.forEach(name -> {
-            // inspect/network inspect 失败（非 0 退出码）= 已不存在
-            if (name.startsWith("net-")) {
-                assertThat(docker("network", "inspect", name).exitCode()).isNotZero();
-            } else if (name.startsWith("vol-")) {
-                assertThat(docker("volume", "inspect", name).exitCode()).isNotZero();
-            } else {
-                assertThat(docker("inspect", name).exitCode()).isNotZero();
-            }
-        });
+        // inspect/network inspect 失败（非 0 退出码）= 已不存在
+        assertResourcesGone(workspaceId);
+    }
+
+    @Test
+    @Timeout(PROBE_TIMEOUT_SECONDS)
+    void given_network_create_fails_when_create_then_provisioned_resources_rolled_back() {
+        requireDockerDaemon();
+        WorkspaceId workspaceId = WorkspaceId.generate();
+        DockerEnvironmentBackend failing = new FailingNetworkCreateBackend("simulated failure");
+
+        assertThatThrownBy(() -> failing.createWorkspace(workspaceId, EnvKind.DEV))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining("环境后端操作失败");
+
+        // 置备中途失败已级联回滚：dev 容器/网络/卷无残留（#57 泄漏1验收）
+        assertResourcesGone(workspaceId);
+    }
+
+    @Test
+    @Timeout(PROBE_TIMEOUT_SECONDS)
+    void given_address_pool_exhausted_when_create_then_self_diagnosable_error_and_rolled_back() {
+        requireDockerDaemon();
+        WorkspaceId workspaceId = WorkspaceId.generate();
+        DockerEnvironmentBackend failing = new FailingNetworkCreateBackend(
+                "Error response from daemon: failed to allocate gateway: "
+                        + "all predefined address pools have been fully subnetted");
+
+        assertThatThrownBy(() -> failing.createWorkspace(workspaceId, EnvKind.DEV))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining("地址池已耗尽");
+
+        assertResourcesGone(workspaceId);
     }
 
     // ---------- 直连 docker CLI 的验证工具（真实状态为准） ----------
@@ -212,5 +231,40 @@ class DockerEnvironmentBackendTest {
     /** 纯逻辑用例（如 kind 拒绝）不依赖 daemon，不进此门。 */
     private static void requireDockerDaemon() {
         Assumptions.assumeTrue(dockerAvailable(), "本机 docker daemon 不在，跳过真实链路");
+    }
+
+    /** 断言按命名约定派生的容器/网络/卷均已不存在（inspect 非 0 = 已清）。 */
+    private static void assertResourcesGone(WorkspaceId workspaceId) {
+        String id = workspaceId.value();
+        List.of("ws-" + id + "-dev", "pg-" + id, "rd-" + id, "net-" + id,
+                "vol-ws-" + id + "-dev", "vol-pg-" + id)
+                .forEach(name -> {
+                    if (name.startsWith("net-")) {
+                        assertThat(docker("network", "inspect", name).exitCode()).isNotZero();
+                    } else if (name.startsWith("vol-")) {
+                        assertThat(docker("volume", "inspect", name).exitCode()).isNotZero();
+                    } else {
+                        assertThat(docker("inspect", name).exitCode()).isNotZero();
+                    }
+                });
+    }
+
+    /** 注入 network create 失败的后端（覆写 runCapture 单条命令失败，余命令走真实 docker）。 */
+    private static class FailingNetworkCreateBackend extends DockerEnvironmentBackend {
+
+        private final String stderr;
+
+        FailingNetworkCreateBackend(String stderr) {
+            this.stderr = stderr;
+        }
+
+        @Override
+        protected ExecResult runCapture(String... cmd) {
+            if (cmd.length >= 3 && "docker".equals(cmd[0])
+                    && "network".equals(cmd[1]) && "create".equals(cmd[2])) {
+                return new ExecResult("", stderr, 1);
+            }
+            return super.runCapture(cmd);
+        }
     }
 }
