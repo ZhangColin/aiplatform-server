@@ -246,6 +246,28 @@ class ProjectQueryAppServiceTest {
                 .containsExactly(ProjectStatus.DELIVERED, ProjectStatus.IN_PROGRESS);
     }
 
+    /**
+     * 期选取语义护栏（查询收口后仍须成立）：currentOf = OPEN 优先、无 OPEN 取
+     * max-seq——收口项目多闭期只展示最后一个（CLOSED 段），混入旧闭期不算数。
+     */
+    @Test
+    void given_closed_iterations_only_when_list_then_max_seq_stage_shown() {
+        Project delivered = projectRepository.save(Project
+                .create("收口项目", ProjectType.WEBSITE, "opencode", 1L, null));
+        Iteration earlier = Iteration.open(delivered.getId(), 1, ProjectMainChain.STAGE_BA);
+        earlier.close(ProjectMainChain.STAGE_DEV);
+        iterationRepository.save(earlier);
+        Iteration latest = Iteration.open(delivered.getId(), 2, ProjectMainChain.STAGE_DEV);
+        latest.close(ProjectMainChain.STAGE_TEST);
+        iterationRepository.save(latest);
+
+        List<ProjectResponse> list = appService.list(null);
+
+        assertThat(list).hasSize(1);
+        assertThat(list.get(0).status()).isEqualTo(ProjectStatus.DELIVERED);
+        assertThat(list.get(0).stage()).isEqualTo(ProjectMainChain.STAGE_TEST);
+    }
+
     @Test
     void given_mixed_projects_when_list_active_then_only_open_unarchived() {
         Long active = persistedProjectWithIteration(ProjectMainChain.STAGE_BA, 0, 8101L).getId();

@@ -348,9 +348,10 @@ public class ProjectQueryAppService {
         }
     }
 
-    /** 期按项目分组（全量读：量小不分页，列表/门就绪清单一次装载共用）。 */
+    /** 期按项目分组（查询收口：每项目只取当前期候选——OPEN ∪ 无 OPEN 时 max-seq
+     * 闭期，currentOf 选取语义与全量等价；列表/门就绪清单一次装载共用）。 */
     private Map<Long, List<Iteration>> iterationsByProject() {
-        return iterationRepository.findAll().stream()
+        return iterationRepository.findCurrentPerProject().stream()
                 .collect(Collectors.groupingBy(Iteration::getProjectId));
     }
 
