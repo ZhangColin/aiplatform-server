@@ -177,6 +177,17 @@ class AgentEventsControllerSseTest {
         assertThat(client.nextNonCommentLine(1500)).isNull();
     }
 
+    /** 空串头视同无值（新连接）：空 Last-Event-ID 无信息量——按新连接补发，不吞错误卡。 */
+    @Test
+    void given_frames_before_connect_when_subscribe_with_blank_last_event_id_then_replayed()
+            throws Exception {
+        appService.publish("task-start", Map.of("runId", "run-blank-9", "prompt", "x"));
+
+        SseClient client = connect("?runId=run-blank-9", "");
+
+        assertThat(client.nextNonCommentLine()).isEqualTo("id:run-blank-9:1");
+    }
+
     @Test
     void given_swagger_group_when_fetch_api_docs_then_description_embeds_roster() {
         String apiDocs = restTemplate.getForObject("/v3/api-docs/agentengine", String.class);

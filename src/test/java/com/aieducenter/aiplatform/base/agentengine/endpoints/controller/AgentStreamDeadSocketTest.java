@@ -3,10 +3,13 @@ package com.aieducenter.aiplatform.base.agentengine.endpoints.controller;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -18,6 +21,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamProperties;
@@ -101,13 +109,10 @@ class AgentStreamDeadSocketTest {
         sessionStore.put(TEST_SESSION_ID, new BffSession(1L, "sse-test", "idt", "at", "rt",
                 Instant.now().plusSeconds(600)));
 
-        ch.qos.logback.classic.Logger globalHandlerLogger =
-                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory
-                        .getLogger("com.cartisan.web.exception.GlobalExceptionHandler");
-        java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> captured =
-                new java.util.concurrent.CopyOnWriteArrayList<>();
-        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
-                new ch.qos.logback.core.read.ListAppender<>();
+        Logger globalHandlerLogger = (Logger) org.slf4j.LoggerFactory
+                .getLogger("com.cartisan.web.exception.GlobalExceptionHandler");
+        List<ILoggingEvent> captured = new CopyOnWriteArrayList<>();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();   // AppenderBase 未 start 时 doAppend 静默丢弃
         globalHandlerLogger.addAppender(appender);
         try {
@@ -124,7 +129,7 @@ class AgentStreamDeadSocketTest {
             globalHandlerLogger.detachAppender(appender);
         }
         assertThat(captured.stream()
-                .filter(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR)
+                .filter(event -> event.getLevel() == Level.ERROR)
                 .toList())
                 .as("断连属 SSE 正常生命周期，全局异常处理器不得落 ERROR")
                 .isEmpty();
@@ -189,6 +194,8 @@ class AgentStreamDeadSocketTest {
         static RawSseClient connect(int port, String cookie) throws Exception {
             Socket socket = new Socket("localhost", port);
             socket.setTcpNoDelay(true);
+            // BufferedReader 无超时——soTimeout 切片让 awaitPing 的截止时间可兑现
+            socket.setSoTimeout(250);
             String request = "GET /api/agent-events HTTP/1.1\r\n"
                     + "Host: localhost:" + port + "\r\n"
                     + "Accept: text/event-stream\r\n"
@@ -205,7 +212,12 @@ class AgentStreamDeadSocketTest {
         boolean awaitPing(Duration timeout) throws Exception {
             long deadline = System.nanoTime() + timeout.toNanos();
             while (System.nanoTime() < deadline) {
-                String line = readLineWithDeadline(deadline);
+                String line;
+                try {
+                    line = reader.readLine();
+                } catch (SocketTimeoutException sliceElapsed) {
+                    continue;   // soTimeout 切片到期：回截止时间判断继续等
+                }
                 if (line == null) {
                     return false;
                 }
@@ -215,11 +227,6 @@ class AgentStreamDeadSocketTest {
                 // 响应头与空行一路放过
             }
             return false;
-        }
-
-        private String readLineWithDeadline(long deadline) throws Exception {
-            // BufferedReader 无超时，靠 socket soTimeout 切片
-            return reader.readLine();
         }
 
         /** RST 断连（非优雅关闭）：服务端视角 socket 已死。 */

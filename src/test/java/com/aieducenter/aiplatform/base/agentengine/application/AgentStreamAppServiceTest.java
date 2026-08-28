@@ -11,6 +11,9 @@ import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.aieducenter.aiplatform.base.agentengine.domain.model.AgentEventTypes;
@@ -113,6 +116,22 @@ class AgentStreamAppServiceTest {
     @Test
     void given_default_properties_when_get_replay_depth_then_1000() {
         assertThat(new AgentStreamProperties().getReplayDepth()).isEqualTo(1000);
+    }
+
+    /**
+     * 配置键真绑定（app.agent-stream.replay-depth）：走 Spring Boot Binder 实绑——
+     * 前缀/字段名拼写错时字段静默吃默认值，POJO setter 测不出来（#56 AC）。
+     */
+    @Test
+    void given_config_key_when_bind_then_replay_depth_wired() {
+        MapConfigurationPropertySource source = new MapConfigurationPropertySource(
+                Map.of("app.agent-stream.replay-depth", "3"));
+
+        AgentStreamProperties bound = new Binder(source)
+                .bind("app.agent-stream", Bindable.ofInstance(new AgentStreamProperties()))
+                .get();
+
+        assertThat(bound.getReplayDepth()).isEqualTo(3);
     }
 
     /**
