@@ -24,6 +24,7 @@ import com.aieducenter.aiplatform.base.workspace.application.dto.response.ExecRe
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.WorkspaceResponse;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.MiddlewareKind;
+import com.aieducenter.aiplatform.base.workspace.domain.enums.ProvisioningStatus;
 import com.aieducenter.aiplatform.base.workspace.domain.error.WorkspaceMessage;
 import com.cartisan.core.exception.ApplicationException;
 import com.cartisan.web.exception.GlobalExceptionHandler;
@@ -70,6 +71,7 @@ class WorkspaceControllerTest {
         when(appService.create(any(CreateWorkspaceCommand.class)))
                 .thenReturn(new WorkspaceResponse("100", EnvKind.DEV, "开发",
                         "ws-100-dev", "net-100", 20000, 20001,
+                        ProvisioningStatus.READY, "就绪",
                         List.of(new WorkspaceResponse.MiddlewareResourceResponse(
                                 MiddlewareKind.POSTGRESQL, "PostgreSQL",
                                 "pg-100", 35432, "postgresql://pg")),
@@ -91,7 +93,8 @@ class WorkspaceControllerTest {
     @Test
     void given_existing_workspace_when_get_then_returned() throws Exception {
         when(appService.get("100")).thenReturn(new WorkspaceResponse("100", EnvKind.DEV, "开发",
-                "ws-100-dev", "net-100", 20000, 20001, List.of(), null));
+                "ws-100-dev", "net-100", 20000, 20001, ProvisioningStatus.READY, "就绪",
+                List.of(), null));
 
         performAsUser(get("/api/workspaces/100"))
                 .andExpect(status().isOk())

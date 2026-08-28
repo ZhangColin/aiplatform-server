@@ -40,9 +40,10 @@ public class WorkspaceController {
 
     @PostMapping
     @Operation(summary = "创建工作区", description = """
-            落定全部真实副作用后返回：dev 容器 + 专属 network + 独立 pg/redis（就绪等待）+
-            /workspace/.env 连接串注入 + wsp_* 落库。kind 缺省 1（DEV）；Phase A 仅支持
-            DEV，其余 kind 返回 WSP_007。资源 url 即 .env 注入的容器网络内连接串（含凭据）。""")
+            记录落库（provisioning 态）即返回：dev 容器 + 专属 network + 独立 pg/redis 转后台
+            置备（成功回填端口 + 资源转 ready，失败转 failed）。kind 缺省 1（DEV）；Phase A 仅
+            支持 DEV，其余 kind 返回 WSP_007。资源 url 即 .env 注入的容器网络内连接串（含凭据），
+            置备完成前清单为空、端口为 0。""")
     public ApiResponse<WorkspaceResponse> create(
             @RequestBody(required = false) CreateWorkspaceCommand command) {
         return ApiResponse.ok(

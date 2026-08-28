@@ -26,6 +26,7 @@ import com.aieducenter.aiplatform.base.workspace.application.event.WorkspaceDest
 import com.aieducenter.aiplatform.base.workspace.domain.aggregate.Workspace;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.MiddlewareKind;
+import com.aieducenter.aiplatform.base.workspace.domain.enums.ProvisioningStatus;
 import com.aieducenter.aiplatform.base.workspace.domain.model.ExecResult;
 import com.aieducenter.aiplatform.base.workspace.domain.model.ProvisionedResource;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
@@ -39,14 +40,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 工作区生命周期用例（片1b 验收：mock 环境后端，聚焦编排、落库与事件时序）。
- * 生命周期三事件经 {@code @TransactionalEventListener(AFTER_COMMIT)} 的测试监听器
- * 捕获——A1 §5 片1 验收口径；监听器同时记录送达时的库内行数，证明「副作用真实
- * 落定后送达」不是事件自述。Docker 真实链路见 DockerEnvironmentBackendTest。
+ * 工作区生命周期用例（片1b 验收：mock 环境后端与后台置备器，聚焦编排、落库与事件时序）。
+ * 创建异步化（#61）：创建即返回 PROVISIONING 记录 + WorkspaceCreated（AFTER_COMMIT），
+ * docker 副作用转 {@link WorkspaceProvisionAppService} 后台（本测试 mock 置备器，只验「提交」；
+ * 置备收敛在 WorkspaceProvisionAppServiceTest）。生命周期三事件经
+ * {@code @TransactionalEventListener(AFTER_COMMIT)} 测试监听器捕获；Docker 真实链路见
+ * DockerEnvironmentBackendTest。
  */
 @SpringBootTest
 @Import(WorkspaceLifecycleAppServiceTest.EventRecorder.class)
@@ -61,9 +65,13 @@ class WorkspaceLifecycleAppServiceTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    /** 环境后端 mock：真容器链路在 DockerEnvironmentBackendTest，此处聚焦编排与事件。 */
+    /** 环境后端 mock：create 不再同步调用它（#61），置备收敛在 WorkspaceProvisionAppServiceTest。 */
     @MockitoBean
     private EnvironmentBackend environmentBackend;
+
+    /** 后台置备器 mock：编排只验「提交置备」的时机与入参，不验后台收敛。 */
+    @MockitoBean
+    private WorkspaceProvisionAppService provisioner;
 
     @Autowired
     private EventRecorder eventRecorder;
@@ -77,70 +85,41 @@ class WorkspaceLifecycleAppServiceTest {
     }
 
     @Test
-    void given_dev_command_when_create_then_recorded_and_created_event_after_commit() {
-        when(environmentBackend.createWorkspace(any(), eq(EnvKind.DEV)))
-                .thenReturn(devProvision("100"));
-
+    void given_dev_command_when_create_then_provisioning_record_created_event_and_provision_enqueued() {
         WorkspaceResponse response = appService.create(new CreateWorkspaceCommand(EnvKind.DEV));
 
-        assertThat(response.workspaceId()).isEqualTo("100");
-        assertThat(response.kind()).isEqualTo(EnvKind.DEV);
-        assertThat(response.resources()).hasSize(2);
-        assertThat(response.resources())
-                .extracting(WorkspaceResponse.MiddlewareResourceResponse::url)
-                .containsExactly("postgresql://pg", "redis://rd");
-        // 库记录真实落定（独立连接可见 = 已提交，服务重启后仍在）
+        // 创建即返回 PROVISIONING 记录：端口 0、资源清单空、确定性命名已落位
+        assertThat(response.status()).isEqualTo(ProvisioningStatus.PROVISIONING);
+        assertThat(response.hostPort()).isZero();
+        assertThat(response.previewPort()).isZero();
+        assertThat(response.resources()).isEmpty();
+        assertThat(response.containerName()).isEqualTo("ws-" + response.workspaceId() + "-dev");
+        assertThat(response.networkName()).isEqualTo("net-" + response.workspaceId());
+        // 库记录真实落定（独立连接可见 = 已提交）：PROVISIONING 态
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT container_name FROM wsp_workspaces WHERE id = 100", String.class))
-                .isEqualTo("ws-100-dev");
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM wsp_resources WHERE workspace_id = 100", Integer.class))
-                .isEqualTo(2);
-        // 事件 AFTER_COMMIT 送达，且送达时副作用已可查（非事务内自述）
+                "SELECT provisioning_status FROM wsp_workspaces WHERE id = ?", Integer.class,
+                Long.parseLong(response.workspaceId())))
+                .isEqualTo(ProvisioningStatus.PROVISIONING.getCode());
+        // 事件 AFTER_COMMIT 送达，workspaceId 即记录 id
         assertThat(eventRecorder.created()).hasSize(1);
-        assertThat(eventRecorder.created().get(0).workspaceId().value()).isEqualTo("100");
+        assertThat(eventRecorder.created().get(0).workspaceId().value())
+                .isEqualTo(response.workspaceId());
         assertThat(eventRecorder.created().get(0).kind()).isEqualTo(EnvKind.DEV);
         assertThat(eventRecorder.workspacesAtCreatedDelivery()).isEqualTo(1);
+
+        // 事务提交后提交后台置备（同 workspaceId）；本线程不同步调用 docker
+        ArgumentCaptor<WorkspaceId> id = ArgumentCaptor.forClass(WorkspaceId.class);
+        verify(provisioner).provision(id.capture(), eq(EnvKind.DEV));
+        assertThat(id.getValue().value()).isEqualTo(response.workspaceId());
+        verify(environmentBackend, never()).createWorkspace(any(), any());
     }
 
     @Test
-    void given_default_command_when_create_then_dev_kind_passed_to_backend() {
-        when(environmentBackend.createWorkspace(any(), any()))
-                .thenReturn(devProvision("101"));
-
+    void given_default_command_when_create_then_dev_kind_passed_to_provisioner() {
         appService.create(new CreateWorkspaceCommand(null));
 
-        verify(environmentBackend).createWorkspace(any(), eq(EnvKind.DEV));
-    }
-
-    @Test
-    void given_persist_fails_when_create_then_docker_resources_reclaimed_and_no_row() {
-        // 预占同名容器：落库撞唯一约束 → 模拟记录失败路径
-        workspaceRepository.save(Workspace.dev(WorkspaceId.of("999"),
-                "ws-100-dev", "net-other", 1, 2));
-        when(environmentBackend.createWorkspace(any(), eq(EnvKind.DEV)))
-                .thenReturn(devProvision("100"));
-
-        assertThatThrownBy(() -> appService.create(new CreateWorkspaceCommand(EnvKind.DEV)))
-                .isInstanceOf(Exception.class);
-
-        verify(environmentBackend).destroyWorkspace(any(WorkspaceHandle.class));
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM wsp_workspaces WHERE id = 100", Integer.class))
-                .isEqualTo(0);
-        assertThat(eventRecorder.created()).isEmpty();
-    }
-
-    @Test
-    void given_backend_fails_when_create_then_propagated_and_nothing_recorded() {
-        when(environmentBackend.createWorkspace(any(), any()))
-                .thenThrow(new IllegalStateException("docker down"));
-
-        assertThatThrownBy(() -> appService.create(new CreateWorkspaceCommand(EnvKind.DEV)))
-                .isInstanceOf(IllegalStateException.class);
-
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM wsp_workspaces", Integer.class)).isEqualTo(0);
+        verify(provisioner).provision(any(WorkspaceId.class), eq(EnvKind.DEV));
+        verify(environmentBackend, never()).createWorkspace(any(), any());
     }
 
     @Test
@@ -151,6 +130,7 @@ class WorkspaceLifecycleAppServiceTest {
 
         assertThat(response.containerName()).isEqualTo("ws-100-dev");
         assertThat(response.networkName()).isEqualTo("net-100");
+        assertThat(response.status()).isEqualTo(ProvisioningStatus.READY);
         assertThat(response.resources()).hasSize(2);
     }
 

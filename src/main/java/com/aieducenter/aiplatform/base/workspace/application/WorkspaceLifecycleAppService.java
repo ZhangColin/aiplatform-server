@@ -17,11 +17,11 @@ import com.aieducenter.aiplatform.base.workspace.application.event.WorkspaceCrea
 import com.aieducenter.aiplatform.base.workspace.application.event.WorkspaceDestroyed;
 import com.aieducenter.aiplatform.base.workspace.application.mapper.WorkspaceMapper;
 import com.aieducenter.aiplatform.base.workspace.domain.aggregate.Workspace;
+import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
 import com.aieducenter.aiplatform.base.workspace.domain.error.WorkspaceMessage;
 import com.aieducenter.aiplatform.base.workspace.domain.model.ExecResult;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceId;
-import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceProvision;
 import com.aieducenter.aiplatform.base.workspace.domain.port.EnvironmentBackend;
 import com.aieducenter.aiplatform.base.workspace.domain.repository.WorkspaceRepository;
 
@@ -30,10 +30,12 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * 工作区生命周期用例（B0 蓝图 §2 片1b）：创建 / 查询 / exec / 预览 / 销毁级联。
  *
- * <p>事务形态：Docker 副作用（秒级、可能触发镜像构建）一律在事务外先行落定，
- * 库记录与事件发布收进同一短事务（{@link TransactionTemplate}）——生命周期事件在
- * 事务内经 PUBLISHER 端口发出，订阅方按 AFTER_COMMIT 语义在副作用真实落定后
- * 收到（A1 §4.1）。创建落库失败时回收已落定的 Docker 资源，不留孤儿容器。</p>
+ * <p>创建异步化（#58/#61）：工作区记录（PROVISIONING 态）与 WorkspaceCreated 事件
+ * 收进同一短事务（{@link TransactionTemplate}）立即返回，docker 置备转后台
+ * （{@link WorkspaceProvisionAppService}）并行收敛到 ready / failed——「能对话」与「环境就绪」
+ * 解耦，点创建即对话。创建不在请求线程内同步调用 docker；事务提交后才提交后台置备，
+ * 置备线程 {@code findById} 保证可见已提交记录。落库失败时未产生任何 docker 副作用，
+ * 无需回收（副作用全部在提交后、后台线程内落定）。</p>
  */
 @Service
 @Slf4j
@@ -44,42 +46,40 @@ public class WorkspaceLifecycleAppService {
     private final TransactionTemplate transactionTemplate;
     private final ApplicationEventPublisher eventPublisher;
     private final WorkspaceMapper workspaceMapper;
+    private final WorkspaceProvisionAppService provisioner;
 
     public WorkspaceLifecycleAppService(EnvironmentBackend environmentBackend,
                                         WorkspaceRepository workspaceRepository,
                                         TransactionTemplate transactionTemplate,
                                         ApplicationEventPublisher eventPublisher,
-                                        WorkspaceMapper workspaceMapper) {
+                                        WorkspaceMapper workspaceMapper,
+                                        WorkspaceProvisionAppService provisioner) {
         this.environmentBackend = environmentBackend;
         this.workspaceRepository = workspaceRepository;
         this.transactionTemplate = transactionTemplate;
         this.eventPublisher = eventPublisher;
         this.workspaceMapper = workspaceMapper;
+        this.provisioner = provisioner;
     }
 
     /**
-     * 创建工作区：环境后端落定真实副作用（dev 容器 + 专属 network + pg/redis +
-     * /workspace/.env 注入），记录经置备状态机（registerPending → complete）落库并发
-     * WorkspaceCreated（AFTER_COMMIT）。创建仍是同步的——状态机先落位，异步化后续切片切换。
+     * 创建工作区：记录经置备状态机入口（registerPending，PROVISIONING、端口 0、
+     * 确定性命名）落库并发布 WorkspaceCreated（AFTER_COMMIT）即返回；docker 副作用
+     * 转后台 {@link WorkspaceProvisionAppService} 并行收敛——成功经 complete 回填端口 + 资源
+     * 转 READY，失败级联回滚（#57）+ 自诊断转 FAILED。
      */
     public WorkspaceResponse create(CreateWorkspaceCommand command) {
-        WorkspaceProvision provision = environmentBackend.createWorkspace(
-                WorkspaceId.generate(), command.kindOrDefault());
-        try {
-            return transactionTemplate.execute(status -> {
-                Workspace workspace = workspaceRepository.save(
-                        Workspace.registerPending(provision.workspaceId(), provision.kind())
-                                .complete(provision));
-                eventPublisher.publishApplicationEvent(
-                        WorkspaceCreated.of(workspace.workspaceId(), workspace.getKind()));
-                return workspaceMapper.convert(workspace);
-            });
-        } catch (RuntimeException e) {
-            // 落库失败：回收已落定的物理资源，不留与记录脱节的容器/网络/卷
-            log.error("工作区 {} 记录入库失败，回收物理资源", provision.workspaceId(), e);
-            environmentBackend.destroyWorkspace(provision.handle());
-            throw e;
-        }
+        WorkspaceId workspaceId = WorkspaceId.generate();
+        EnvKind kind = command.kindOrDefault();
+        WorkspaceResponse response = transactionTemplate.execute(status -> {
+            Workspace workspace = workspaceRepository.save(
+                    Workspace.registerPending(workspaceId, kind));
+            eventPublisher.publishApplicationEvent(WorkspaceCreated.of(workspaceId, kind));
+            return workspaceMapper.convert(workspace);
+        });
+        // 事务提交后异步置备（此时记录已可见，置备线程可接回并落库收口）
+        provisioner.provision(workspaceId, kind);
+        return response;
     }
 
     /**

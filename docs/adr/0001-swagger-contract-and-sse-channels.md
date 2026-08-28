@@ -46,6 +46,7 @@
 ### 事件产生机制与概念定位
 
 - **编排层发射制**：平台通知由 application service 在**副作用真实落定后**（落库/容器就绪之后）调 EventHub 广播；base 区不发 SSE（base.workspace 不知道 `projectId`，「底座零业务概念」的自然推论）；agent 流由适配器回调透传。EventHub 是纯技术广播组件（fire-and-forget：发送失败只记日志，不影响业务事务）。
+  - **修订（#61，置备异步化）**：`workspace-created` 的「副作用真实落定」从「容器就绪」收窄为「**工作区记录（PROVISIONING 态）落库**」——docker 置备转后台收敛，创建即发射、容器后台置备中。语义正本见 [SSE事件清单](../spec/SSE事件清单.md)（「信号非权威，状态以 REST 查询 `status` 为准」）。
 - **SSE ≠ 应用事件**。cartisan-boot 的应用事件（BC 间/跨服务，进程内 → 将来消息中间件）与 SSE 呈现通道是两个机制，概念与实现都不混；将来框架层也不合并（桥接至多做成可选项）。
 - 事实命名与将来应用事件对齐（`WorkspaceCreated` 等），但**应用事件管道 Phase A 不架**——今天没有任何后端订阅方（A6 计量走直调上报）。触发条件：环境闲置回收（base 定时回收要通知 business，第一个只能发事件的单向场景）/ 第一个后端订阅方出现 / 跨服务。
 - **修订（A1 · [票 #5](https://github.com/ZhangColin/aiplatform-server/issues/5)，2026-08-20）**：上条细化为——① 业务内 `TaskCompleted`（task→project 回填编排，已有真实订阅方）与 ② base 生命周期事件**发布端**（WorkspaceCreated/Destroyed/PreviewReady，cartisan 应用事件 + Spring 发布器）随各自切片就位；outbox/事件存储/重放等管道设施仍不建；SSE 呈现通道归属不变（业务编排层发射，base 不发 SSE）。详见 [A1 规格](../spec/A1-底座四口子规格.md) §4。

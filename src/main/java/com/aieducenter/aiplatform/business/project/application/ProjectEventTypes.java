@@ -7,7 +7,7 @@ package com.aieducenter.aiplatform.business.project.application;
  */
 public final class ProjectEventTypes {
 
-    /** 工作区已建（容器 + 中间件就绪，建项目副作用落定后）。 */
+    /** 工作区记录已建（容器后台置备中，建项目副作用落定后；#61 起非「容器就绪」）。 */
     public static final String WORKSPACE_CREATED = "workspace-created";
 
     /** 阶段推进/驳回停留（含建项目起始段 BA 与编排触发的 DEV→TEST；驳回带 reason）。 */

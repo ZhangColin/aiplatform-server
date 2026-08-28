@@ -25,6 +25,7 @@ import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleA
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.CreateWorkspaceCommand;
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.WorkspaceResponse;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
+import com.aieducenter.aiplatform.base.workspace.domain.enums.ProvisioningStatus;
 import com.aieducenter.aiplatform.business.project.application.dto.command.CreateProjectCommand;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectAgentTaskResponse;
 import com.aieducenter.aiplatform.business.project.application.dto.response.ProjectCreatedResponse;
@@ -394,7 +395,7 @@ class ProjectLifecycleAppServiceTest {
     private void stubWorkspace(String workspaceId, String containerName) {
         when(workspaceLifecycleAppService.create(any())).thenReturn(new WorkspaceResponse(
                 workspaceId, EnvKind.DEV, "开发环境", containerName, "net-x", 14096, 18081,
-                List.of(), LocalDateTime.now()));
+                ProvisioningStatus.READY, "就绪", List.of(), LocalDateTime.now()));
     }
 
     private Long persistedProjectWithIteration(String workspaceId) {

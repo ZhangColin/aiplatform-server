@@ -19,6 +19,7 @@ public interface WorkspaceMapper extends DomainMapper<Workspace, WorkspaceRespon
     @Override
     @Mapping(target = "workspaceId", source = "id")
     @Mapping(target = "kindName", source = "kind.name")
+    @Mapping(target = "statusName", source = "status.name")
     WorkspaceResponse convert(Workspace workspace);
 
     @Mapping(target = "kindName", source = "kind.name")

@@ -5,10 +5,13 @@ import java.util.List;
 
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.MiddlewareKind;
+import com.aieducenter.aiplatform.base.workspace.domain.enums.ProvisioningStatus;
 
 /**
  * 工作区响应（记录形态 + 资源清单 + .env 注入的连接串原文）。
  * 枚举字段按编写规范以 Integer code 序列化，xxxName 补显示名。
+ * {@code status} 暴露置备状态（#58/#61）：创建返回时记录已就绪、容器后台置备中
+ * （PROVISIONING、端口 0、资源清单空），置备完成后回填端口 + 资源转 READY。
  */
 public record WorkspaceResponse(
         String workspaceId,
@@ -18,6 +21,8 @@ public record WorkspaceResponse(
         String networkName,
         int hostPort,
         int previewPort,
+        ProvisioningStatus status,
+        String statusName,
         List<MiddlewareResourceResponse> resources,
         LocalDateTime createdAt) {
 
