@@ -59,14 +59,17 @@ public class WorkspaceLifecycleAppService {
 
     /**
      * 创建工作区：环境后端落定真实副作用（dev 容器 + 专属 network + pg/redis +
-     * /workspace/.env 注入），记录入库并发 WorkspaceCreated（AFTER_COMMIT）。
+     * /workspace/.env 注入），记录经置备状态机（registerPending → complete）落库并发
+     * WorkspaceCreated（AFTER_COMMIT）。创建仍是同步的——状态机先落位，异步化后续切片切换。
      */
     public WorkspaceResponse create(CreateWorkspaceCommand command) {
         WorkspaceProvision provision = environmentBackend.createWorkspace(
                 WorkspaceId.generate(), command.kindOrDefault());
         try {
             return transactionTemplate.execute(status -> {
-                Workspace workspace = workspaceRepository.save(Workspace.register(provision));
+                Workspace workspace = workspaceRepository.save(
+                        Workspace.registerPending(provision.workspaceId(), provision.kind())
+                                .complete(provision));
                 eventPublisher.publishApplicationEvent(
                         WorkspaceCreated.of(workspace.workspaceId(), workspace.getKind()));
                 return workspaceMapper.convert(workspace);

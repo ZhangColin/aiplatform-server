@@ -29,6 +29,10 @@ _Avoid_: 领域事件（聚合内事件，已废弃不用）、agent 流事件�
 **环境（Environment）**：
 一个抽象的计算环境，kind = dev / test / prod。dev = agent 工作区（写码/打包/运行）；test/prod = 纯运行打包产物。六条能力面：createWorkspace / exec+文件 / exposePort / attachResource / snapshot+restore / isolate。
 
+**置备状态（Provisioning Status）**：
+环境的生命周期状态：provisioning（置备中）→ ready（就绪）/ failed（失败）。环境的引用（对话）与置备完成解耦——对话即时可用、置备后台收敛；状态只用于管理环境可用性，不暴露给对话 UI，失败在工作台可见、需要环境的能力时阻塞。
+_Avoid_: 状态机暴露给用户（那是无缝体验的破坏）；与运行（Run）的状态混用（那是执行过程，两码事）
+
 **开发智能体（Coding Agent）**：
 有代码能力的智能体（开发 / Review / 修 bug / 跑测试），经「开发智能体适配层」接入。
 

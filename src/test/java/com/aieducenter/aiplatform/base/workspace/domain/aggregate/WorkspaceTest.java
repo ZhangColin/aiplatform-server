@@ -7,6 +7,7 @@ import com.cartisan.core.exception.DomainException;
 import com.aieducenter.aiplatform.base.workspace.domain.entity.MiddlewareResource;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.MiddlewareKind;
+import com.aieducenter.aiplatform.base.workspace.domain.enums.ProvisioningStatus;
 import com.aieducenter.aiplatform.base.workspace.domain.model.ProvisionedResource;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceId;
@@ -116,5 +117,100 @@ class WorkspaceTest {
         assertThat(handle.networkName()).isEqualTo("net-42");
         assertThat(handle.hostPort()).isEqualTo(20000);
         assertThat(handle.previewPort()).isEqualTo(20001);
+    }
+
+    // ---------- 置备状态机（#60：registerPending / complete / markFailed 不变量） ----------
+
+    @Test
+    void given_pending_registration_when_created_then_provisioning_with_zero_ports_and_deterministic_names() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+
+        assertThat(workspace.getStatus()).isEqualTo(ProvisioningStatus.PROVISIONING);
+        assertThat(workspace.getHostPort()).isZero();
+        assertThat(workspace.getPreviewPort()).isZero();
+        assertThat(workspace.getContainerName()).isEqualTo("ws-42-dev");
+        assertThat(workspace.getNetworkName()).isEqualTo("net-42");
+    }
+
+    @Test
+    void given_runtime_pending_when_register_then_kind_aware_naming() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.TEST);
+
+        assertThat(workspace.getContainerName()).isEqualTo("ws-42-test");
+        assertThat(workspace.getNetworkName()).isEqualTo("net-42");
+    }
+
+    @Test
+    void given_pending_workspace_when_complete_then_ready_with_ports_and_resources_backfilled() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+        WorkspaceProvision provision = WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001),
+                new ProvisionedResource(MiddlewareKind.POSTGRESQL, "pg-42", 35432, "postgresql://pg"),
+                new ProvisionedResource(MiddlewareKind.REDIS, "rd-42", 36379, "redis://rd"));
+
+        workspace.complete(provision);
+
+        assertThat(workspace.getStatus()).isEqualTo(ProvisioningStatus.READY);
+        assertThat(workspace.getHostPort()).isEqualTo(20000);
+        assertThat(workspace.getPreviewPort()).isEqualTo(20001);
+        assertThat(workspace.getResources()).hasSize(2);
+    }
+
+    @Test
+    void given_mismatched_provision_when_complete_then_rejected() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+        WorkspaceProvision provision = WorkspaceProvision.of(
+                WorkspaceHandle.dev(WorkspaceId.of("99"), "ws-99-dev", "net-99", 20000, 20001));
+
+        assertThatThrownBy(() -> workspace.complete(provision))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining("置备状态不合法");
+    }
+
+    @Test
+    void given_ready_workspace_when_complete_again_then_rejected() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+        workspace.complete(WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001)));
+
+        assertThatThrownBy(() -> workspace.complete(WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001))))
+                .isInstanceOf(DomainException.class);
+    }
+
+    @Test
+    void given_pending_workspace_when_mark_failed_then_failed() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+
+        workspace.markFailed();
+
+        assertThat(workspace.getStatus()).isEqualTo(ProvisioningStatus.FAILED);
+    }
+
+    @Test
+    void given_failed_workspace_when_complete_then_rejected() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV).markFailed();
+
+        assertThatThrownBy(() -> workspace.complete(WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001))))
+                .isInstanceOf(DomainException.class);
+    }
+
+    @Test
+    void given_ready_workspace_when_mark_failed_then_rejected() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+        workspace.complete(WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001)));
+
+        assertThatThrownBy(() -> workspace.markFailed())
+                .isInstanceOf(DomainException.class);
+    }
+
+    @Test
+    void given_registered_workspace_when_status_then_ready() {
+        Workspace workspace = Workspace.register(WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001)));
+
+        assertThat(workspace.getStatus()).isEqualTo(ProvisioningStatus.READY);
     }
 }

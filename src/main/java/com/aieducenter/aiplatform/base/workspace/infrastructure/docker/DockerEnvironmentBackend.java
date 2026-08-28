@@ -27,6 +27,7 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.ExecResult;
 import com.aieducenter.aiplatform.base.workspace.domain.model.ProvisionedResource;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceId;
+import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceNaming;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceProvision;
 import com.aieducenter.aiplatform.base.workspace.domain.port.EnvironmentBackend;
 
@@ -39,8 +40,8 @@ import lombok.extern.slf4j.Slf4j;
  * <p>一个工作区 = 一个 dev 容器（镜像 aiplatform/dev：node + coding agent 运行时 +
  * 静态预览服务器）+ 一个专属 docker network + 独立 pg/redis 容器；连接串写入
  * {@code /workspace/.env}（agent 从环境读）。宿主机映射随机端口（本地工具直连用）。
- * 资源命名按 workspaceId 约定派生（容器/网络/卷），销毁级联因此可从句柄独立完成。
- * Phase A 仅实现 DEV 供给；TEST/PROD（打包产物形态）随后续切片落位。</p>
+ * 容器/网络命名消费确定性命名（{@link WorkspaceNaming}，与记录同源派生），销毁级联
+ * 因此可从句柄独立完成。Phase A 仅实现 DEV 供给；TEST/PROD（打包产物形态）随后续切片落位。</p>
  */
 @Component
 @Adapter(PortType.CLIENT)
@@ -73,7 +74,7 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
         if (kind != EnvKind.DEV) {
             throw new ApplicationException(WorkspaceMessage.ENVIRONMENT_KIND_NOT_SUPPORTED);
         }
-        String containerName = devContainer(workspaceId);
+        String containerName = WorkspaceNaming.containerName(workspaceId, EnvKind.DEV);
         // 幂等预清：移除同名残留（只删不建，无需回滚）
         runSilently("docker", "rm", "-f", containerName);
         try {
@@ -82,7 +83,7 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
             int[] ports = startDevContainer(workspaceId, containerName);
             List<ProvisionedResource> resources = provisionResources(workspaceId, containerName);
             return WorkspaceProvision.of(
-                    WorkspaceHandle.dev(workspaceId, containerName, networkOf(workspaceId),
+                    WorkspaceHandle.dev(workspaceId, containerName, WorkspaceNaming.networkName(workspaceId),
                             ports[0], ports[1]),
                     resources.toArray(new ProvisionedResource[0]));
         } catch (RuntimeException e) {
@@ -103,7 +104,7 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
         runSilently("docker", "rm", "-f", containerName);
         runSilently("docker", "rm", "-f", pgContainer(workspaceId));
         runSilently("docker", "rm", "-f", redisContainer(workspaceId));
-        runSilently("docker", "network", "rm", networkOf(workspaceId));
+        runSilently("docker", "network", "rm", WorkspaceNaming.networkName(workspaceId));
         runSilently("docker", "volume", "rm", volumeOf(containerName));
         runSilently("docker", "volume", "rm", volumeOf(pgContainer(workspaceId)));
     }
@@ -170,9 +171,9 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
         // 幂等：先清可能的同名残留
         runSilently("docker", "rm", "-f", pgContainer(workspaceId));
         runSilently("docker", "rm", "-f", redisContainer(workspaceId));
-        runSilently("docker", "network", "rm", networkOf(workspaceId));
+        runSilently("docker", "network", "rm", WorkspaceNaming.networkName(workspaceId));
 
-        String network = networkOf(workspaceId);
+        String network = WorkspaceNaming.networkName(workspaceId);
         String pgName = pgContainer(workspaceId);
         String redisName = redisContainer(workspaceId);
         int pgPort = randomPort();
@@ -309,14 +310,8 @@ public class DockerEnvironmentBackend implements EnvironmentBackend {
     }
 
     // ---------- 命名约定（销毁级联与幂等重建的根基） ----------
-
-    private String devContainer(WorkspaceId workspaceId) {
-        return "ws-" + workspaceId.value() + "-dev";
-    }
-
-    private String networkOf(WorkspaceId workspaceId) {
-        return "net-" + workspaceId.value();
-    }
+    // container/network 名消费 {@link WorkspaceNaming}（与记录同源）；pg/redis/卷名
+    // 是后端内部子资源命名（不入库），仅销毁级联用。
 
     private String pgContainer(WorkspaceId workspaceId) {
         return "pg-" + workspaceId.value();
