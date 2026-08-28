@@ -51,10 +51,19 @@ public class WorkspaceController {
     }
 
     @GetMapping("/{workspaceId}")
-    @Operation(summary = "查询工作区", description = "记录 + 资源清单。服务重启后可查（重启接回的验证面）。")
+    @Operation(summary = "查询工作区", description = "记录 + 资源清单 + 置备状态/失败原因。服务重启后可查（重启接回的验证面）。")
     public ApiResponse<WorkspaceResponse> get(
             @Parameter(description = "工作区 id（TSID 字符串）") @PathVariable String workspaceId) {
         return ApiResponse.ok(appService.get(workspaceId));
+    }
+
+    @PostMapping("/{workspaceId}/retry")
+    @Operation(summary = "重试置备", description = """
+            置备失败（failed）转置备中（provisioning）并重新提交后台置备，成功回填端口 +
+            资源转 ready；非 failed 态返回 WSP_009。""")
+    public ApiResponse<WorkspaceResponse> retry(
+            @Parameter(description = "工作区 id") @PathVariable String workspaceId) {
+        return ApiResponse.ok(appService.retry(workspaceId));
     }
 
     @PostMapping("/{workspaceId}/exec")

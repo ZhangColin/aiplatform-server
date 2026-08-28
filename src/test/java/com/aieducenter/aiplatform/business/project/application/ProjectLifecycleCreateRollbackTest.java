@@ -51,7 +51,7 @@ class ProjectLifecycleCreateRollbackTest {
     void given_persist_failure_when_create_then_workspace_reclaimed_and_propagated() {
         when(workspaceLifecycleAppService.create(any())).thenReturn(new WorkspaceResponse(
                 "9300", EnvKind.DEV, "开发环境", "aiplatform-dev-300", "net-x", 14096, 18081,
-                ProvisioningStatus.READY, "就绪", java.util.List.of(), java.time.LocalDateTime.now()));
+                ProvisioningStatus.READY, "就绪", null, java.util.List.of(), java.time.LocalDateTime.now()));
         when(projectRepository.save(any(com.aieducenter.aiplatform.business.project.domain.aggregate.Project.class)))
                 .thenThrow(new IllegalStateException("db down"));
         doThrow(new IllegalStateException("unreachable")).when(iterationRepository)

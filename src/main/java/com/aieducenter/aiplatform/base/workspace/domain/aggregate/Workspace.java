@@ -32,11 +32,13 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceProvision
  * 工作区聚合根（{@code wsp_workspaces}）：环境后端句柄的持久化形态。
  *
  * <p>置备状态机（CONTEXT.md「置备状态」）：{@code PROVISIONING}（置备中，端口 0）
- * ——成功回填端口+资源→ {@code READY}；——失败级联回滚→ {@code FAILED}。
- * {@code FAILED} 不可直接回 {@code READY}。注册 = 环境后端把真实副作用（容器/网络/
- * 中间件）落定后，将句柄与资源清单记录入库；销毁 = 级联清理物理资源后删除记录。
- * 生命周期与记录同生共死，不软删除（Auditable 只取审计字段）。重启接回 =
- * {@link #toHandle()} 从记录重建运行时句柄（{@code PROVISIONING} 期端口为 0）。</p>
+ * ——成功回填端口+资源→ {@code READY}；——失败级联回滚→ {@code FAILED}（带失败原因）。
+ * {@code FAILED} 不可直接回 {@code READY}——需 {@link #retry()} 先回到
+ * {@code PROVISIONING}（重试清空失败原因）再经 {@link #complete(WorkspaceProvision)}。
+ * 注册 = 环境后端把真实副作用（容器/网络/中间件）落定后，将句柄与资源清单记录入库；
+ * 销毁 = 级联清理物理资源后删除记录。生命周期与记录同生共死，不软删除
+ * （Auditable 只取审计字段）。重启接回 = {@link #toHandle()} 从记录重建运行时句柄
+ * （{@code PROVISIONING} 期端口为 0）。</p>
  *
  * <p>ID 显式赋值（workspaceId 先于副作用存在——容器/网络命名要用它），
  * 主键即 {@link WorkspaceId} 的数值形（TSID）。containerName / networkName 按
@@ -69,6 +71,9 @@ public class Workspace extends Auditable implements AggregateRoot<Workspace, Lon
 
     @Column(name = "provisioning_status", nullable = false)
     private ProvisioningStatus status;
+
+    @Column(name = "provision_error")
+    private String provisionError;
 
     @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
     @JoinColumn(name = "workspace_id", nullable = false)
@@ -142,8 +147,8 @@ public class Workspace extends Auditable implements AggregateRoot<Workspace, Lon
 
     /**
      * 置备完成回填（PROVISIONING → READY）：端口 + 中间件资源回填。供给的句柄必须对应
-     * 本工作区（同 id / 同 kind）。{@code FAILED} 不可直接转 READY——需先重试回到
-     * PROVISIONING（异步化后续切片落位）。
+     * 本工作区（同 id / 同 kind）。{@code FAILED} 不可直接转 READY——需先 {@link #retry()}
+     * 回到 PROVISIONING（#63）。
      */
     public Workspace complete(WorkspaceProvision provision) {
         if (status != ProvisioningStatus.PROVISIONING) {
@@ -161,14 +166,30 @@ public class Workspace extends Auditable implements AggregateRoot<Workspace, Lon
     }
 
     /**
-     * 置备失败回滚（PROVISIONING → FAILED）：记录标记失败态，物理资源回收归调用方
-     * （#57 级联回滚口径）。仅 PROVISIONING 可转 FAILED。
+     * 置备失败回滚（PROVISIONING → FAILED）：记录标记失败态并落失败原因（归一化错误码
+     * + 文案，工作台可见、需要环境时阻塞的依据），物理资源回收归调用方（#57 级联回滚
+     * 口径）。仅 PROVISIONING 可转 FAILED。
      */
-    public Workspace markFailed() {
+    public Workspace markFailed(String reason) {
         if (status != ProvisioningStatus.PROVISIONING) {
             throw new DomainException(WorkspaceMessage.WORKSPACE_STATE_INVALID);
         }
+        this.provisionError = reason;
         this.status = ProvisioningStatus.FAILED;
+        return this;
+    }
+
+    /**
+     * 重试（FAILED → PROVISIONING，#63）：置备失败的入口——回到置备中并清空失败原因，
+     * 后台重新置备成功后经 {@link #complete(WorkspaceProvision)} 转 READY。仅 FAILED
+     * 可重试（PROVISIONING / READY 无需也无权重试）。
+     */
+    public Workspace retry() {
+        if (status != ProvisioningStatus.FAILED) {
+            throw new DomainException(WorkspaceMessage.WORKSPACE_STATE_INVALID);
+        }
+        this.provisionError = null;
+        this.status = ProvisioningStatus.PROVISIONING;
         return this;
     }
 

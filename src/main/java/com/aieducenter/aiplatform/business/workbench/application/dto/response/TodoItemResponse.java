@@ -7,8 +7,8 @@ import java.time.Instant;
  * 非落库实体。
  *
  * @param type      待办型：dev = AGENT_WAIT / GATE_PENDING / TASK_SUBMITTED /
- *                  RETEST_READY；opc = NEW_TASK / TASK_REJECTED（任务型随 A4
- *                  #26 接线，谓词照 A4 §7 澄清表）
+ *                  RETEST_READY / WORKSPACE_PROVISION_FAILED；opc = NEW_TASK /
+ *                  TASK_REJECTED（任务型随 A4 #26 接线，谓词照 A4 §7 澄清表）
  * @param projectId 项目标识（TSID 十进制字符串——待办的导航锚点）
  * @param refId     型内引用键：AGENT_WAIT=waitId、GATE_PENDING/RETEST_READY=
  *                  projectId、任务型=taskId
@@ -34,6 +34,9 @@ public record TodoItemResponse(
 
     /** dev 视角：可发复测（存在 FIXED Bug ∧ 无进行中测试任务 ∧ 无 in-flight 修复）。 */
     public static final String TYPE_RETEST_READY = "RETEST_READY";
+
+    /** dev 视角：环境置备失败（工作区 failed 态，需重试）。 */
+    public static final String TYPE_WORKSPACE_PROVISION_FAILED = "WORKSPACE_PROVISION_FAILED";
 
     /** opc 视角：新任务（指派给我 ∧ 已发布）。 */
     public static final String TYPE_NEW_TASK = "NEW_TASK";

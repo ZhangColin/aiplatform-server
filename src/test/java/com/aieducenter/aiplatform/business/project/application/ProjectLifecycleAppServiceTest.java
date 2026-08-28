@@ -395,7 +395,7 @@ class ProjectLifecycleAppServiceTest {
     private void stubWorkspace(String workspaceId, String containerName) {
         when(workspaceLifecycleAppService.create(any())).thenReturn(new WorkspaceResponse(
                 workspaceId, EnvKind.DEV, "开发环境", containerName, "net-x", 14096, 18081,
-                ProvisioningStatus.READY, "就绪", List.of(), LocalDateTime.now()));
+                ProvisioningStatus.READY, "就绪", null, List.of(), LocalDateTime.now()));
     }
 
     private Long persistedProjectWithIteration(String workspaceId) {

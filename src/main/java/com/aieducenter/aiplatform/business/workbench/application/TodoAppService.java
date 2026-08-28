@@ -1,5 +1,6 @@
 package com.aieducenter.aiplatform.business.workbench.application;
 
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -19,6 +20,8 @@ import com.cartisan.core.exception.BaseCodeMessage;
 import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppService;
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
+import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
+import com.aieducenter.aiplatform.base.workspace.application.dto.response.ProvisionFailedWorkspaceResponse;
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
 import com.aieducenter.aiplatform.business.task.application.TaskQueryAppService;
@@ -44,13 +47,16 @@ public class TodoAppService {
     private final AgentWaitAppService agentWaitAppService;
     private final ProjectQueryAppService projectQueryAppService;
     private final TaskQueryAppService taskQueryAppService;
+    private final WorkspaceLifecycleAppService workspaceLifecycleAppService;
 
     public TodoAppService(AgentWaitAppService agentWaitAppService,
                           ProjectQueryAppService projectQueryAppService,
-                          TaskQueryAppService taskQueryAppService) {
+                          TaskQueryAppService taskQueryAppService,
+                          WorkspaceLifecycleAppService workspaceLifecycleAppService) {
         this.agentWaitAppService = agentWaitAppService;
         this.projectQueryAppService = projectQueryAppService;
         this.taskQueryAppService = taskQueryAppService;
+        this.workspaceLifecycleAppService = workspaceLifecycleAppService;
     }
 
     /**
@@ -74,6 +80,7 @@ public class TodoAppService {
             todos.addAll(taskTodos(taskQueryAppService.submittedTodoSources(),
                     TodoItemResponse.TYPE_TASK_SUBMITTED, title -> "「" + title + "」已提交，待确认"));
             todos.addAll(retestReadyTodos());
+            todos.addAll(provisionFailedTodos());
         }
         return todos.stream()
                 .sorted(Comparator.comparing(TodoItemResponse::createdAt).reversed())
@@ -148,6 +155,37 @@ public class TodoAppService {
                         source.projectId(), source.projectId(),
                         "Bug 已修复，可发复测任务", source.since()))
                 .toList();
+    }
+
+    // ---------- WORKSPACE_PROVISION_FAILED：置备失败投影（#63 非侵入标记） ----------
+
+    /** 置备失败工作区 → 待办（refId=workspaceId；工作区无归属项目的跳过——待办无处导航）。 */
+    private List<TodoItemResponse> provisionFailedTodos() {
+        List<ProvisionFailedWorkspaceResponse> failed =
+                workspaceLifecycleAppService.listProvisionFailed();
+        if (failed.isEmpty()) {
+            return List.of();
+        }
+        // TSID 字符串形解析一次，按数值键寻址（projectIdByWorkspaceId 以 Long 为键）
+        Map<Long, ProvisionFailedWorkspaceResponse> failedByWorkspace = failed.stream()
+                .collect(Collectors.toMap(f -> Long.parseLong(f.workspaceId()), Function.identity()));
+        Map<Long, String> projectIdByWorkspace =
+                projectQueryAppService.projectIdByWorkspaceId(failedByWorkspace.keySet());
+        return failedByWorkspace.entrySet().stream()
+                .map(entry -> toProvisionFailedTodo(entry.getValue(),
+                        projectIdByWorkspace.get(entry.getKey())))
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    private static TodoItemResponse toProvisionFailedTodo(ProvisionFailedWorkspaceResponse failed,
+                                                          String projectId) {
+        if (projectId == null) {
+            return null; // 工作区无归属项目（非 dev 环境 / 项目已删残留）：不进 dev 待办
+        }
+        return new TodoItemResponse(TodoItemResponse.TYPE_WORKSPACE_PROVISION_FAILED, projectId,
+                failed.workspaceId(), "环境置备失败",
+                failed.failedAt().atZone(ZoneId.systemDefault()).toInstant());
     }
 
     // ---------- 内部 ----------

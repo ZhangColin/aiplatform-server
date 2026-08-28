@@ -1,6 +1,7 @@
 package com.aieducenter.aiplatform.base.workspace.application;
 
 import java.net.URI;
+import java.util.List;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -11,6 +12,7 @@ import com.cartisan.event.ApplicationEventPublisher;
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.CreateWorkspaceCommand;
 import com.aieducenter.aiplatform.base.workspace.application.dto.command.WorkspaceExecCommand;
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.ExecResultResponse;
+import com.aieducenter.aiplatform.base.workspace.application.dto.response.ProvisionFailedWorkspaceResponse;
 import com.aieducenter.aiplatform.base.workspace.application.dto.response.WorkspaceResponse;
 import com.aieducenter.aiplatform.base.workspace.application.event.PreviewReady;
 import com.aieducenter.aiplatform.base.workspace.application.event.WorkspaceCreated;
@@ -18,6 +20,7 @@ import com.aieducenter.aiplatform.base.workspace.application.event.WorkspaceDest
 import com.aieducenter.aiplatform.base.workspace.application.mapper.WorkspaceMapper;
 import com.aieducenter.aiplatform.base.workspace.domain.aggregate.Workspace;
 import com.aieducenter.aiplatform.base.workspace.domain.enums.EnvKind;
+import com.aieducenter.aiplatform.base.workspace.domain.enums.ProvisioningStatus;
 import com.aieducenter.aiplatform.base.workspace.domain.error.WorkspaceMessage;
 import com.aieducenter.aiplatform.base.workspace.domain.model.ExecResult;
 import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceHandle;
@@ -90,6 +93,33 @@ public class WorkspaceLifecycleAppService {
      */
     public WorkspaceResponse get(String workspaceId) {
         return workspaceMapper.convert(requireWorkspace(workspaceId));
+    }
+
+    /**
+     * 重试置备（#63 失败呈现的手动入口）：FAILED → PROVISIONING 落库后重新提交后台
+     * 置备（成功经 complete 回填端口 + 资源转 READY）。非 FAILED 态由聚合
+     * {@link Workspace#retry()} 抛 WSP_009（PROVISIONING / READY 无需重试）。记录
+     * 落库与后台置备解耦（同 create：事务提交后提交，置备线程可见已提交记录）。
+     */
+    public WorkspaceResponse retry(String workspaceId) {
+        Workspace workspace = requireWorkspace(workspaceId);
+        Workspace retried = transactionTemplate.execute(status ->
+                workspaceRepository.save(workspace.retry()));
+        provisioner.provision(retried.workspaceId(), retried.getKind());
+        return workspaceMapper.convert(retried);
+    }
+
+    /**
+     * 置备失败工作区清单（workbench「待办可见」投影源，#63）：status=FAILED 的记录
+     * 投影（workspaceId + 失败原因 + 失败时刻）。归档/删除的归属映射归 workbench 投影层。
+     */
+    public List<ProvisionFailedWorkspaceResponse> listProvisionFailed() {
+        return workspaceRepository.findByStatus(ProvisioningStatus.FAILED).stream()
+                .map(workspace -> new ProvisionFailedWorkspaceResponse(
+                        workspace.workspaceId().value(),
+                        workspace.getProvisionError(),
+                        workspace.getUpdatedAt()))
+                .toList();
     }
 
     /**

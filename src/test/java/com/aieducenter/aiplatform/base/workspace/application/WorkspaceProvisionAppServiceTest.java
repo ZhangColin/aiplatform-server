@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -65,7 +66,7 @@ class WorkspaceProvisionAppServiceTest {
     }
 
     @Test
-    void given_backend_failure_when_provision_then_workspace_marked_failed() {
+    void given_backend_failure_when_provision_then_workspace_marked_failed_with_reason() {
         WorkspaceId id = WorkspaceId.of("42");
         Workspace pending = Workspace.registerPending(id, EnvKind.DEV);
         when(workspaceRepository.findById(42L)).thenReturn(Optional.of(pending));
@@ -77,9 +78,50 @@ class WorkspaceProvisionAppServiceTest {
         ArgumentCaptor<Workspace> saved = ArgumentCaptor.forClass(Workspace.class);
         verify(workspaceRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ProvisioningStatus.FAILED);
+        // 失败落归一化失败原因（WSP_008 自诊断，工作台可见）
+        assertThat(saved.getValue().getProvisionError())
+                .startsWith(WorkspaceMessage.ENVIRONMENT_ADDRESS_POOL_EXHAUSTED.code());
         // 失败不回填端口/资源（保持置备中占位，端口 0、清单空）
         assertThat(saved.getValue().getHostPort()).isZero();
         assertThat(saved.getValue().getResources()).isEmpty();
+    }
+
+    @Test
+    void given_persistent_backend_failure_when_provision_then_retries_up_to_max_attempts() {
+        WorkspaceId id = WorkspaceId.of("42");
+        Workspace pending = Workspace.registerPending(id, EnvKind.DEV);
+        when(workspaceRepository.findById(42L)).thenReturn(Optional.of(pending));
+        when(environmentBackend.createWorkspace(id, EnvKind.DEV))
+                .thenThrow(new ApplicationException(WorkspaceMessage.ENVIRONMENT_OPERATION_FAILED,
+                        "命令失败"));
+
+        provisioner(3).provision(id, EnvKind.DEV);
+
+        // 达上限转 failed：createWorkspace 被重试满 maxAttempts 次（含首次）
+        verify(environmentBackend, times(3)).createWorkspace(id, EnvKind.DEV);
+        ArgumentCaptor<Workspace> saved = ArgumentCaptor.forClass(Workspace.class);
+        verify(workspaceRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ProvisioningStatus.FAILED);
+    }
+
+    @Test
+    void given_transient_failure_when_provision_then_retries_then_ready() {
+        WorkspaceId id = WorkspaceId.of("42");
+        Workspace pending = Workspace.registerPending(id, EnvKind.DEV);
+        when(workspaceRepository.findById(42L)).thenReturn(Optional.of(pending));
+        when(environmentBackend.createWorkspace(id, EnvKind.DEV))
+                .thenThrow(new ApplicationException(WorkspaceMessage.ENVIRONMENT_OPERATION_FAILED,
+                        "命令失败"))
+                .thenReturn(devProvision(id));
+
+        provisioner(3).provision(id, EnvKind.DEV);
+
+        // 首次失败、第二次成功即收敛 READY，不继续重试
+        verify(environmentBackend, times(2)).createWorkspace(id, EnvKind.DEV);
+        ArgumentCaptor<Workspace> saved = ArgumentCaptor.forClass(Workspace.class);
+        verify(workspaceRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ProvisioningStatus.READY);
+        assertThat(saved.getValue().getProvisionError()).isNull();
     }
 
     @Test
@@ -109,7 +151,8 @@ class WorkspaceProvisionAppServiceTest {
         });
 
         WorkspaceProvisionAppService provisioner =
-                new WorkspaceProvisionAppService(environmentBackend, workspaceRepository);
+                new WorkspaceProvisionAppService(environmentBackend, workspaceRepository,
+                        new WorkspaceProperties());
         try {
             for (int i = 0; i < n; i++) {
                 provisioner.provision(new WorkspaceId(1000L + i), EnvKind.DEV);
@@ -126,7 +169,12 @@ class WorkspaceProvisionAppServiceTest {
     // ---------- 测试数据 ----------
 
     private WorkspaceProvisionAppService provisioner() {
-        return new WorkspaceProvisionAppService(environmentBackend, workspaceRepository, Runnable::run);
+        return provisioner(3);
+    }
+
+    private WorkspaceProvisionAppService provisioner(int maxAttempts) {
+        return new WorkspaceProvisionAppService(environmentBackend, workspaceRepository,
+                maxAttempts, Runnable::run);
     }
 
     private WorkspaceProvision devProvision(WorkspaceId id) {

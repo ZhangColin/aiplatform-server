@@ -71,7 +71,7 @@ class WorkspaceControllerTest {
         when(appService.create(any(CreateWorkspaceCommand.class)))
                 .thenReturn(new WorkspaceResponse("100", EnvKind.DEV, "开发",
                         "ws-100-dev", "net-100", 20000, 20001,
-                        ProvisioningStatus.READY, "就绪",
+                        ProvisioningStatus.READY, "就绪", null,
                         List.of(new WorkspaceResponse.MiddlewareResourceResponse(
                                 MiddlewareKind.POSTGRESQL, "PostgreSQL",
                                 "pg-100", 35432, "postgresql://pg")),
@@ -93,7 +93,7 @@ class WorkspaceControllerTest {
     @Test
     void given_existing_workspace_when_get_then_returned() throws Exception {
         when(appService.get("100")).thenReturn(new WorkspaceResponse("100", EnvKind.DEV, "开发",
-                "ws-100-dev", "net-100", 20000, 20001, ProvisioningStatus.READY, "就绪",
+                "ws-100-dev", "net-100", 20000, 20001, ProvisioningStatus.READY, "就绪", null,
                 List.of(), null));
 
         performAsUser(get("/api/workspaces/100"))
@@ -112,6 +112,30 @@ class WorkspaceControllerTest {
                 // 统一信封：code = HTTP 语义状态，message = 错误文案（WSP_001 前缀在 WorkspaceMessage 注册）
                 .andExpect(jsonPath("$.code").value(404))
                 .andExpect(jsonPath("$.message").value("工作区不存在"));
+    }
+
+    @Test
+    void given_failed_workspace_when_retry_then_provisioning_response_returned() throws Exception {
+        when(appService.retry("100")).thenReturn(new WorkspaceResponse("100", EnvKind.DEV, "开发",
+                "ws-100-dev", "net-100", 0, 0, ProvisioningStatus.PROVISIONING, "置备中", null,
+                List.of(), null));
+
+        performAsUser(post("/api/workspaces/100/retry"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.workspaceId").value("100"))
+                .andExpect(jsonPath("$.data.status").value(1)); // PROVISIONING（Integer code）
+        verify(appService).retry("100");
+    }
+
+    @Test
+    void given_non_failed_workspace_when_retry_then_wsp_009_mapped_to_400() throws Exception {
+        when(appService.retry("100"))
+                .thenThrow(new ApplicationException(WorkspaceMessage.WORKSPACE_STATE_INVALID));
+
+        performAsUser(post("/api/workspaces/100/retry"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("工作区置备状态不合法"));
     }
 
     @Test

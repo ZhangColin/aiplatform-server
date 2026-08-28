@@ -20,6 +20,7 @@ import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppServi
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
+import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
 import com.aieducenter.aiplatform.business.identity.domain.model.AuthCookies;
 import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSession;
 import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSessionStore;
@@ -63,6 +64,9 @@ class TodoControllerTest {
 
     @MockitoBean
     private TaskQueryAppService taskQueryAppService;
+
+    @MockitoBean
+    private WorkspaceLifecycleAppService workspaceLifecycleAppService;
 
     @Test
     void given_session_when_get_todos_then_items_in_envelope() throws Exception {

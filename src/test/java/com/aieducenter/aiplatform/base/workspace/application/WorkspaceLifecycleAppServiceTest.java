@@ -35,6 +35,7 @@ import com.aieducenter.aiplatform.base.workspace.domain.model.WorkspaceProvision
 import com.aieducenter.aiplatform.base.workspace.domain.port.EnvironmentBackend;
 import com.aieducenter.aiplatform.base.workspace.domain.repository.WorkspaceRepository;
 import com.cartisan.core.exception.ApplicationException;
+import com.cartisan.core.exception.DomainException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -220,12 +221,51 @@ class WorkspaceLifecycleAppServiceTest {
     @Test
     void given_failed_workspace_when_exec_then_provision_failed_not_reaching_backend() {
         workspaceRepository.save(Workspace.registerPending(WorkspaceId.of("107"), EnvKind.DEV)
-                .markFailed());
+                .markFailed("WSP_008：docker 网络地址池已耗尽"));
 
         assertThatThrownBy(() -> appService.exec("107", new WorkspaceExecCommand("ls")))
                 .isInstanceOf(ApplicationException.class)
                 .hasMessageContaining("环境置备失败");
         verify(environmentBackend, never()).exec(any(), any());
+    }
+
+    @Test
+    void given_failed_workspace_when_get_then_provision_error_exposed() {
+        workspaceRepository.save(Workspace.registerPending(WorkspaceId.of("108"), EnvKind.DEV)
+                .markFailed("WSP_008：docker 网络地址池已耗尽"));
+
+        WorkspaceResponse response = appService.get("108");
+
+        assertThat(response.status()).isEqualTo(ProvisioningStatus.FAILED);
+        assertThat(response.provisionError()).isEqualTo("WSP_008：docker 网络地址池已耗尽");
+    }
+
+    @Test
+    void given_failed_workspace_when_retry_then_provisioning_and_reprovisioned() {
+        workspaceRepository.save(Workspace.registerPending(WorkspaceId.of("109"), EnvKind.DEV)
+                .markFailed("WSP_008：docker 网络地址池已耗尽"));
+
+        WorkspaceResponse response = appService.retry("109");
+
+        // FAILED → PROVISIONING（失败原因清空）落库，后台重新提交置备
+        assertThat(response.status()).isEqualTo(ProvisioningStatus.PROVISIONING);
+        assertThat(response.provisionError()).isNull();
+        ArgumentCaptor<WorkspaceId> id = ArgumentCaptor.forClass(WorkspaceId.class);
+        verify(provisioner).provision(id.capture(), eq(EnvKind.DEV));
+        assertThat(id.getValue().value()).isEqualTo("109");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT provisioning_status FROM wsp_workspaces WHERE id = 109", Integer.class))
+                .isEqualTo(ProvisioningStatus.PROVISIONING.getCode());
+    }
+
+    @Test
+    void given_ready_workspace_when_retry_then_state_invalid() {
+        workspaceRepository.save(Workspace.register(devProvision("110")));
+
+        assertThatThrownBy(() -> appService.retry("110"))
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining("置备状态不合法");
+        verify(provisioner, never()).provision(any(), any());
     }
 
     @Test

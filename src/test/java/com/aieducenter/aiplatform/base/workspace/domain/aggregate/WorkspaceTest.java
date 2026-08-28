@@ -179,17 +179,19 @@ class WorkspaceTest {
     }
 
     @Test
-    void given_pending_workspace_when_mark_failed_then_failed() {
+    void given_pending_workspace_when_mark_failed_then_failed_with_reason() {
         Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
 
-        workspace.markFailed();
+        workspace.markFailed("WSP_008：docker 网络地址池已耗尽");
 
         assertThat(workspace.getStatus()).isEqualTo(ProvisioningStatus.FAILED);
+        assertThat(workspace.getProvisionError()).isEqualTo("WSP_008：docker 网络地址池已耗尽");
     }
 
     @Test
     void given_failed_workspace_when_complete_then_rejected() {
-        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV).markFailed();
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV)
+                .markFailed("WSP_008：docker 网络地址池已耗尽");
 
         assertThatThrownBy(() -> workspace.complete(WorkspaceProvision.of(
                 WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001))))
@@ -202,7 +204,54 @@ class WorkspaceTest {
         workspace.complete(WorkspaceProvision.of(
                 WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001)));
 
-        assertThatThrownBy(() -> workspace.markFailed())
+        assertThatThrownBy(() -> workspace.markFailed("WSP_008：docker 网络地址池已耗尽"))
+                .isInstanceOf(DomainException.class);
+    }
+
+    // ---------- 置备失败重试（#63：FAILED → PROVISIONING 回置备中） ----------
+
+    @Test
+    void given_failed_workspace_when_retry_then_back_to_provisioning_and_error_cleared() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV)
+                .markFailed("WSP_008：docker 网络地址池已耗尽");
+
+        workspace.retry();
+
+        assertThat(workspace.getStatus()).isEqualTo(ProvisioningStatus.PROVISIONING);
+        assertThat(workspace.getProvisionError()).isNull();
+        assertThat(workspace.getHostPort()).isZero();
+        assertThat(workspace.getResources()).isEmpty();
+    }
+
+    @Test
+    void given_retried_workspace_when_complete_then_ready() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV)
+                .markFailed("WSP_008：docker 网络地址池已耗尽").retry();
+
+        workspace.complete(WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001)));
+
+        assertThat(workspace.getStatus()).isEqualTo(ProvisioningStatus.READY);
+        assertThat(workspace.getProvisionError()).isNull();
+        assertThat(workspace.getHostPort()).isEqualTo(20000);
+    }
+
+    @Test
+    void given_pending_workspace_when_retry_then_rejected() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+
+        assertThatThrownBy(workspace::retry)
+                .isInstanceOf(DomainException.class)
+                .hasMessageContaining("置备状态不合法");
+    }
+
+    @Test
+    void given_ready_workspace_when_retry_then_rejected() {
+        Workspace workspace = Workspace.registerPending(ID, EnvKind.DEV);
+        workspace.complete(WorkspaceProvision.of(
+                WorkspaceHandle.dev(ID, "ws-42-dev", "net-42", 20000, 20001)));
+
+        assertThatThrownBy(workspace::retry)
                 .isInstanceOf(DomainException.class);
     }
 

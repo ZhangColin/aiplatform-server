@@ -61,6 +61,10 @@ app:
     default-model: deepseek:deepseek-v4-flash
     default-system-prompt: 你是平台对话智能体。
     timeout: 2m
+  # #63 · base.workspace：后台置备失败自动重试上界（含首次，即 N-1 次自动重试），
+  # 达上限转 failed 待手动重试（POST /api/workspaces/{id}/retry）。
+  workspace:
+    provision-max-attempts: 3
 
 # A2 · business.identity：OIDC BFF 认证（sso.* 七项，照 identity demo SsoProperties）。
 # 凭据只落本地环境变量（.env.local，gitignored），不进 git——见 docs/guide/本机依赖启动.md。

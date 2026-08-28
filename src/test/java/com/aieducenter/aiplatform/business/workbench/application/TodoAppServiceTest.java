@@ -1,6 +1,7 @@
 package com.aieducenter.aiplatform.business.workbench.application;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -17,6 +18,8 @@ import com.aieducenter.aiplatform.base.agentengine.application.AgentWaitAppServi
 import com.aieducenter.aiplatform.base.agentengine.application.dto.response.WaitPointResponse;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitKind;
 import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
+import com.aieducenter.aiplatform.base.workspace.application.WorkspaceLifecycleAppService;
+import com.aieducenter.aiplatform.base.workspace.application.dto.response.ProvisionFailedWorkspaceResponse;
 import com.aieducenter.aiplatform.business.project.application.ProjectQueryAppService;
 import com.aieducenter.aiplatform.business.project.application.dto.response.GateReadyResponse;
 import com.aieducenter.aiplatform.business.task.application.TaskQueryAppService;
@@ -26,6 +29,7 @@ import com.aieducenter.aiplatform.business.workbench.application.dto.response.To
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -49,12 +53,17 @@ class TodoAppServiceTest {
     @Mock
     private TaskQueryAppService taskQueryAppService;
 
+    @Mock
+    private WorkspaceLifecycleAppService workspaceLifecycleAppService;
+
     private TodoAppService appService;
 
     @BeforeEach
     void setUp() {
         appService = new TodoAppService(agentWaitAppService, projectQueryAppService,
-                taskQueryAppService);
+                taskQueryAppService, workspaceLifecycleAppService);
+        // dev 各型缺省无置备失败（opc 不走该分支，lenient 免 UnnecessaryStubbing）
+        lenient().when(workspaceLifecycleAppService.listProvisionFailed()).thenReturn(List.of());
     }
 
     // ---------- AGENT_WAIT ----------
@@ -164,6 +173,40 @@ class TodoAppServiceTest {
         assertThat(todos.get(0).type()).isEqualTo(TodoItemResponse.TYPE_RETEST_READY);
         assertThat(todos.get(0).refId()).isEqualTo("p5"); // RETEST_READY refId=projectId
         assertThat(todos.get(0).title()).isEqualTo("Bug 已修复，可发复测任务");
+    }
+
+    // ---------- WORKSPACE_PROVISION_FAILED ----------
+
+    @Test
+    void given_failed_workspace_when_list_dev_then_provision_failed_todo_ref_id_workspace() {
+        when(agentWaitAppService.listPendingWaits()).thenReturn(List.of());
+        when(projectQueryAppService.listGateReady()).thenReturn(List.of());
+        when(taskQueryAppService.submittedTodoSources()).thenReturn(List.of());
+        when(taskQueryAppService.retestReadyProjects()).thenReturn(List.of());
+        when(workspaceLifecycleAppService.listProvisionFailed()).thenReturn(List.of(
+                new ProvisionFailedWorkspaceResponse("4242", "WSP_008：docker 网络地址池已耗尽",
+                        LocalDateTime.of(2026, 8, 22, 16, 0))));
+        when(projectQueryAppService.projectIdByWorkspaceId(any()))
+                .thenReturn(Map.of(4242L, "p1"));
+
+        List<TodoItemResponse> todos = appService.list("dev");
+
+        assertThat(todos).hasSize(1);
+        assertThat(todos.get(0).type()).isEqualTo(TodoItemResponse.TYPE_WORKSPACE_PROVISION_FAILED);
+        assertThat(todos.get(0).projectId()).isEqualTo("p1");
+        assertThat(todos.get(0).refId()).isEqualTo("4242"); // refId=workspaceId
+        assertThat(todos.get(0).title()).isEqualTo("环境置备失败");
+    }
+
+    @Test
+    void given_failed_workspace_without_project_when_list_dev_then_skipped() {
+        // 工作区无归属项目（项目已删残留）：不进 dev 待办
+        when(workspaceLifecycleAppService.listProvisionFailed()).thenReturn(List.of(
+                new ProvisionFailedWorkspaceResponse("9999", "WSP_008：docker 网络地址池已耗尽",
+                        LocalDateTime.of(2026, 8, 22, 16, 0))));
+        when(projectQueryAppService.projectIdByWorkspaceId(any())).thenReturn(Map.of());
+
+        assertThat(appService.list("dev")).isEmpty();
     }
 
     // ---------- view 过滤 ----------
