@@ -176,6 +176,59 @@ class WorkspaceLifecycleAppServiceTest {
     }
 
     @Test
+    void given_pending_workspace_when_handleOf_then_deterministic_names_and_zero_ports() {
+        workspaceRepository.save(Workspace.registerPending(WorkspaceId.of("106"), EnvKind.DEV));
+
+        WorkspaceHandle handle = appService.handleOf("106");
+
+        // 置备中句柄可取：确定性命名 + 端口 0（BA 对话只消费 containerName，无需等待）
+        assertThat(handle.containerName()).isEqualTo("ws-106-dev");
+        assertThat(handle.networkName()).isEqualTo("net-106");
+        assertThat(handle.hostPort()).isZero();
+        assertThat(handle.previewPort()).isZero();
+    }
+
+    @Test
+    void given_pending_workspace_when_exec_then_implicitly_waits_until_ready() throws Exception {
+        WorkspaceId id = WorkspaceId.of("106");
+        workspaceRepository.save(Workspace.registerPending(id, EnvKind.DEV));
+        when(environmentBackend.exec(any(), eq("echo hi"))).thenReturn(new ExecResult("hi", "", 0));
+
+        // 后台线程延迟完成置备（模拟 provisioner 收敛 READY），主线程在 exec 处隐式等待
+        Thread flipper = new Thread(() -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            Workspace pending = workspaceRepository.findById(106L).orElseThrow();
+            workspaceRepository.save(pending.complete(devProvision("106")));
+        });
+        flipper.start();
+
+        ExecResultResponse response = appService.exec("106", new WorkspaceExecCommand("echo hi"));
+        flipper.join();
+
+        assertThat(response.stdout()).isEqualTo("hi");
+        // exec 用的是就绪后回填真实端口的句柄（非置备中端口 0）
+        ArgumentCaptor<WorkspaceHandle> handle = ArgumentCaptor.forClass(WorkspaceHandle.class);
+        verify(environmentBackend).exec(handle.capture(), eq("echo hi"));
+        assertThat(handle.getValue().previewPort()).isEqualTo(20001);
+    }
+
+    @Test
+    void given_failed_workspace_when_exec_then_provision_failed_not_reaching_backend() {
+        workspaceRepository.save(Workspace.registerPending(WorkspaceId.of("107"), EnvKind.DEV)
+                .markFailed());
+
+        assertThatThrownBy(() -> appService.exec("107", new WorkspaceExecCommand("ls")))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining("环境置备失败");
+        verify(environmentBackend, never()).exec(any(), any());
+    }
+
+    @Test
     void given_seeded_workspace_when_pack_source_then_bytes_from_backend_handle_rebuilt() {
         workspaceRepository.save(Workspace.register(devProvision("105")));
         byte[] tarball = {0x1f, (byte) 0x8b, 0x08};

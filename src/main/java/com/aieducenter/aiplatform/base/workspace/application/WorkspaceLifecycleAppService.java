@@ -47,19 +47,22 @@ public class WorkspaceLifecycleAppService {
     private final ApplicationEventPublisher eventPublisher;
     private final WorkspaceMapper workspaceMapper;
     private final WorkspaceProvisionAppService provisioner;
+    private final WorkspaceReadinessWaiter readinessWaiter;
 
     public WorkspaceLifecycleAppService(EnvironmentBackend environmentBackend,
                                         WorkspaceRepository workspaceRepository,
                                         TransactionTemplate transactionTemplate,
                                         ApplicationEventPublisher eventPublisher,
                                         WorkspaceMapper workspaceMapper,
-                                        WorkspaceProvisionAppService provisioner) {
+                                        WorkspaceProvisionAppService provisioner,
+                                        WorkspaceReadinessWaiter readinessWaiter) {
         this.environmentBackend = environmentBackend;
         this.workspaceRepository = workspaceRepository;
         this.transactionTemplate = transactionTemplate;
         this.eventPublisher = eventPublisher;
         this.workspaceMapper = workspaceMapper;
         this.provisioner = provisioner;
+        this.readinessWaiter = readinessWaiter;
     }
 
     /**
@@ -100,19 +103,21 @@ public class WorkspaceLifecycleAppService {
 
     /**
      * 在工作区容器内执行命令取结果（exitCode 非 0 是命令失败，不是环境故障）。
+     * 置备中的工作区隐式等待就绪（#62），FAILED/超时不静默悬挂而是报错。
      */
     public ExecResultResponse exec(String workspaceId, WorkspaceExecCommand command) {
-        Workspace workspace = requireWorkspace(workspaceId);
+        Workspace workspace = readinessWaiter.awaitReady(requireWorkspace(workspaceId));
         ExecResult result = environmentBackend.exec(workspace.toHandle(), command.command());
         return new ExecResultResponse(result.stdout(), result.stderr(), result.exitCode());
     }
 
     /**
      * 暴露预览并发 PreviewReady（AFTER_COMMIT）。发布走短事务——订阅方的事务性
-     * 监听依赖一个真实提交的事务，这里预览无落库、事务体只含发布。
+     * 监听依赖一个真实提交的事务，这里预览无落库、事务体只含发布。置备中隐式等待
+     * 就绪（#62）后执行。
      */
     public URI exposePreview(String workspaceId) {
-        Workspace workspace = requireWorkspace(workspaceId);
+        Workspace workspace = readinessWaiter.awaitReady(requireWorkspace(workspaceId));
         URI url = environmentBackend.exposePort(workspace.toHandle(),
                 EnvironmentBackend.DEV_PREVIEW_CONTAINER_PORT);
         transactionTemplate.executeWithoutResult(status -> eventPublisher.publishApplicationEvent(
@@ -122,10 +127,10 @@ public class WorkspaceLifecycleAppService {
 
     /**
      * 打包工作区源码为 tar.gz 字节流（排除 .env 机密与 node_modules；下载交付
-     * 的文件名/HTTP 头归调用方，本层只出字节）。
+     * 的文件名/HTTP 头归调用方，本层只出字节）。置备中隐式等待就绪（#62）后执行。
      */
     public byte[] packSource(String workspaceId) {
-        Workspace workspace = requireWorkspace(workspaceId);
+        Workspace workspace = readinessWaiter.awaitReady(requireWorkspace(workspaceId));
         return environmentBackend.packSource(workspace.toHandle());
     }
 
