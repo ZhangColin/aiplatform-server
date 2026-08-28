@@ -95,7 +95,7 @@ class AgentTaskAppServiceTest {
                 new EngineConfigAppService(engineConfigRepository, registry),
                 sessionRepository, waitRepository,
                 new WaitResponderDirectory(java.util.List.of(stubAdapter, dsh), java.util.List.of()),
-                new AgentStreamAppService(hub), waitAppService);
+                streamAppService, waitAppService);
         when(sessionRepository.findBySessionId("dsh-sid")).thenReturn(Optional.empty());
 
         AgentTaskResponse response = configured.dispatch(Long.toString(WORKSPACE_ID),
@@ -110,17 +110,19 @@ class AgentTaskAppServiceTest {
     private final StubAdapter stubAdapter = new StubAdapter();
     private final RecordingSseSender sender = new RecordingSseSender();
     private SseChannelHub hub;
+    private AgentStreamAppService streamAppService;
     private AgentTaskAppService appService;
 
     @BeforeEach
     void setUp() {
         hub = new SseChannelHub(sender, Clock.fixed(Instant.EPOCH, ZoneOffset.UTC),
                 Duration.ofSeconds(600));
+        streamAppService = new AgentStreamAppService(hub, new AgentStreamProperties());
         appService = new AgentTaskAppService(handleClient,
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, new DshStubAdapter())),
                 engineConfigService(), sessionRepository, waitRepository,
                 new WaitResponderDirectory(java.util.List.of(stubAdapter), java.util.List.of()),
-                new AgentStreamAppService(hub), waitAppService);
+                streamAppService, waitAppService);
     }
 
     @AfterEach
@@ -156,7 +158,7 @@ class AgentTaskAppServiceTest {
     void given_adapter_events_when_dispatch_then_stream_payload_carries_workspace_id() {
         stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
         when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.dispatch(Long.toString(WORKSPACE_ID),
                 new AgentTaskDispatchCommand("写个落地页", null, null, null, null));
@@ -241,7 +243,7 @@ class AgentTaskAppServiceTest {
                 new AgentEngineRegistry(java.util.List.of(stubAdapter, dsh)),
                 engineConfigService(), sessionRepository, waitRepository,
                 new WaitResponderDirectory(java.util.List.of(stubAdapter, dsh), java.util.List.of()),
-                new AgentStreamAppService(hub), waitAppService);
+                streamAppService, waitAppService);
         AgentSession existing = AgentSession.open(WORKSPACE_ID, "dsh", "dsh-old", "run-old");
         when(sessionRepository.findBySessionId("dsh-old")).thenReturn(Optional.of(existing));
         when(sessionRepository.findBySessionId("dsh-new")).thenReturn(Optional.empty());
@@ -272,7 +274,7 @@ class AgentTaskAppServiceTest {
         stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
         stubAdapter.emitWaitRaised = true;
         when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.dispatch(Long.toString(WORKSPACE_ID),
                 new AgentTaskDispatchCommand("写个落地页", null, null, null, null));
@@ -345,7 +347,7 @@ class AgentTaskAppServiceTest {
                 new WaitPointResponse("wait-1", Long.toString(WORKSPACE_ID), "ses_new",
                         "run-biz-1", "que_1", WaitKind.QUESTION, null, WaitStatus.PENDING, null,
                         "用哪个框架?", Map.of(), null, null, Instant.EPOCH, null));
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.dispatch(Long.toString(WORKSPACE_ID),
                 new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
@@ -367,7 +369,7 @@ class AgentTaskAppServiceTest {
         stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
         stubAdapter.emitWaitRaised = true;
         when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.dispatch(Long.toString(WORKSPACE_ID),
                 new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
@@ -384,7 +386,7 @@ class AgentTaskAppServiceTest {
     void given_correlated_context_when_frames_published_then_all_carry_correlation() {
         stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
         when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.dispatch(Long.toString(WORKSPACE_ID),
                 new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
@@ -435,7 +437,7 @@ class AgentTaskAppServiceTest {
     void given_throwing_observer_when_dispatch_then_base_bridge_unaffected() {
         stubAdapter.nextResult = new RunResult("ignored", "ses_new", true);
         when(sessionRepository.findBySessionId("ses_new")).thenReturn(Optional.empty());
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.dispatch(Long.toString(WORKSPACE_ID),
                 new AgentTaskDispatchCommand("写个落地页", null, null, null, null),
@@ -462,7 +464,7 @@ class AgentTaskAppServiceTest {
                 AgentSession.open(WORKSPACE_ID, "opencode", "ses_1", "run-1")));
         when(waitAppService.expireRunReturning("run-1"))
                 .thenReturn(List.of(WaitPointResponse.from(wait)));
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1",
                 Map.of("projectId", "proj-9"));
@@ -496,7 +498,7 @@ class AgentTaskAppServiceTest {
                 .thenReturn(Optional.of(AgentSession.open(WORKSPACE_ID, "opencode", "ses_1",
                         "run-9")));
         when(waitAppService.expireRunReturning("run-9")).thenReturn(List.of());
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.cancelRun(Long.toString(WORKSPACE_ID), "run-9", null);
 
@@ -560,7 +562,7 @@ class AgentTaskAppServiceTest {
                         "run-1")));
         when(waitAppService.expireRunReturning("run-1")).thenReturn(List.of());
         stubAdapter.failAbort = true;
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1", null);
 
@@ -577,7 +579,7 @@ class AgentTaskAppServiceTest {
                 .thenReturn(Optional.of(AgentSession.open(WORKSPACE_ID, "opencode", "ses_1",
                         "run-1")));
         when(waitAppService.expireRunReturning("run-1")).thenReturn(List.of());
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1", null);
         appService.cancelRun(Long.toString(WORKSPACE_ID), "run-1", null);
@@ -596,7 +598,7 @@ class AgentTaskAppServiceTest {
                         Long.toString(WORKSPACE_ID), "ses_1", "run-1", "que_2",
                         WaitKind.QUESTION, null, WaitStatus.EXPIRED, null, "用哪个框架?",
                         Map.of(), null, null, Instant.EPOCH, null)));
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         appService.terminateRun(Long.toString(WORKSPACE_ID), "opencode", "ses_1", "run-1",
                 Map.of("projectId", "proj-9"));
@@ -618,7 +620,7 @@ class AgentTaskAppServiceTest {
                 engineConfigService(), sessionRepository, waitRepository,
                 new WaitResponderDirectory(java.util.List.of(stubAdapter),
                         java.util.List.of(agentscope)),
-                new AgentStreamAppService(hub), waitAppService);
+                streamAppService, waitAppService);
         AgentWait pending = AgentWait.raise(WORKSPACE_ID, "ba-7", "run-ba", WaitKind.QUESTION,
                 "que_ba", "用哪个框架?", Map.of(), Instant.EPOCH);
         when(waitRepository.findByRunId("run-ba")).thenReturn(List.of(pending));
@@ -626,7 +628,7 @@ class AgentTaskAppServiceTest {
                 AgentSession.open(WORKSPACE_ID, "agentscope", "ba-7", "run-ba")));
         when(waitAppService.expireRunReturning("run-ba"))
                 .thenReturn(List.of(WaitPointResponse.from(pending)));
-        var emitter = appServiceDelegate().subscribe(null, null, null);
+        var emitter = appServiceDelegate().subscribe(null, null, null, false);
 
         baService.cancelRun(Long.toString(WORKSPACE_ID), "run-ba", null);
 
@@ -647,7 +649,7 @@ class AgentTaskAppServiceTest {
 
     /** 通道订阅代理（emitter 断言用）。 */
     private AgentStreamAppService appServiceDelegate() {
-        return new AgentStreamAppService(hub);
+        return streamAppService;
     }
 
     private String capturedRunId() {

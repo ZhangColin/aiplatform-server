@@ -36,6 +36,8 @@ data: {"type":"...","payload":{...},"ts":"2026-08-19T02:15:33.123Z"}
 
 一次智能体运行的增量过程流（LLM 交互过程流的细化）；payload 必带 `runId`，`sessionId` 会话建立后携带。`projectId` 由业务编排桥接（片5）注入；**片2a 底座任务端点（`POST /api/workspaces/{id}/agent/tasks`）直发的事件以 `workspaceId` 关联**（底座零业务概念，无 projectId）。订阅过滤：`?runId=`（任务进度页「看某个运行才挂」的常规姿势）/ `?workspaceId=`（片2a 底座直发）/ `?projectId=`（片5 起），可叠用（AND）。
 
+通道是**带近期帧缓冲的热流**（[#56](https://github.com/ZhangColin/aiplatform-server/issues/56)，[#53](https://github.com/ZhangColin/aiplatform-server/issues/53)）：帧一经发射即进 per-channel 有界缓冲（零订阅时也进），默认最近 1000 帧、配置 `app.agent-stream.replay-depth`。**新连接**（无 `Last-Event-ID` 请求头）先收命中订阅过滤的最近缓冲帧（原事件 id，与实时帧同一 id 口径）、再无缝进实时流——起跑即死的 error 帧晚到订阅也可见，刷新后最近过程历史不消失；**断线重连**（浏览器自动携带 `Last-Event-ID`）不补发、不做 seq 续传，前端对齐维持 REST 重查兜底。缓冲为**单实例内存态**（重启即失），多实例化时需重估（B0 蓝图 §3 升级路径）。
+
 下表「payload 字段」列的关联字段 = `runId`（必带）+ `projectId`（片5 业务桥接注入；片2a 底座直发为 `workspaceId`，事件流**结束时整批到达**——同步 message 的已知限制，逐 part 增量是升级路径）。
 
 两类事件：

@@ -20,6 +20,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamProperties;
 import com.aieducenter.aiplatform.base.eventhub.infrastructure.sse.SseChannelHub;
 import com.aieducenter.aiplatform.business.identity.domain.model.AuthCookies;
 import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSession;
@@ -246,7 +247,7 @@ class AgentStreamDeadSocketTest {
 
         @Bean
         AgentStreamAppService agentStreamAppService(SseChannelHub hub) {
-            return new AgentStreamAppService(hub);
+            return new AgentStreamAppService(hub, new AgentStreamProperties());
         }
 
         @Bean

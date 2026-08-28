@@ -2,6 +2,7 @@ package com.aieducenter.aiplatform.base.agentengine.endpoints.controller;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
 import java.io.IOException;
@@ -10,6 +11,7 @@ import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -36,12 +38,17 @@ public class AgentEventsController {
     }
 
     /**
-     * 订阅 agent 运行过程事件流。
+     * 订阅 agent 运行过程事件流。Last-Event-ID 请求头作新连/重连分野：缺席 = 新连接
+     * = 先补发命中订阅过滤的最近缓冲帧（默认 1000 帧，app.agent-stream.replay-depth）
+     * 再进实时流；在场 = 断线重连 = 不补发（REST 重查兜底，不做 seq 续传）。
      */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "订阅 agent 流事件流（SSE）", description = """
             一次智能体运行的增量过程流（通道二，任务进度页组件级消费——看某个运行才挂）。
-            Phase A 不补发，断线重连后前端对齐以 REST 重查兜底。
+            带近期帧缓冲的热流：新连接（无 Last-Event-ID）先补发命中订阅过滤的最近缓冲帧
+            （默认 1000 帧，配置 app.agent-stream.replay-depth），再无缝进实时流；断线重连
+            （浏览器自动携带 Last-Event-ID）不补发，前端对齐以 REST 重查兜底。缓冲为单实例
+            内存态（重启即失，多实例化时需重估）。
 
             信封：SSE name 恒为 `event`；id = `{runId}:{seq}`；data = `{"type","payload","ts"}`
             （payload 恒为对象、必带 runId、内禁 type 键名）。心跳：每 15s 发注释行 `:ping`。
@@ -66,8 +73,13 @@ public class AgentEventsController {
             @Parameter(description = "按运行过滤（任务进度页「看某个运行才挂」的常规姿势）")
             @RequestParam(required = false) String runId,
             @Parameter(description = "按工作区过滤（片2a 底座任务端点直发事件的关联字段）")
-            @RequestParam(required = false) String workspaceId) {
-        return appService.subscribe(projectId, runId, workspaceId);
+            @RequestParam(required = false) String workspaceId,
+            @Parameter(in = ParameterIn.HEADER, description = "SSE 断线重连自动携带；"
+                    + "缺席 = 新连接 = 先补发最近缓冲帧，在场 = 重连 = 不补发（REST 重查兜底）")
+            @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
+        // 新连/重连分野：空头视同新连接（重放）——浏览器只在真见过帧后才带值
+        return appService.subscribe(projectId, runId, workspaceId,
+                lastEventId == null || lastEventId.isBlank());
     }
 
     /**

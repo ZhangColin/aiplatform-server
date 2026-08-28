@@ -32,6 +32,7 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.http.MediaType;
 
 import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamAppService;
+import com.aieducenter.aiplatform.base.agentengine.application.AgentStreamProperties;
 import com.aieducenter.aiplatform.base.eventhub.infrastructure.sse.SseChannelHub;
 import com.aieducenter.aiplatform.business.identity.domain.model.AuthCookies;
 import com.aieducenter.aiplatform.business.identity.infrastructure.session.BffSession;
@@ -85,10 +86,15 @@ class AgentEventsControllerSseTest {
     }
 
     private SseClient connect(String query) throws Exception {
+        return connect(query, null);
+    }
+
+    /** lastEventId 非空 = 浏览器断线重连姿态（自动携带 Last-Event-ID 请求头）。 */
+    private SseClient connect(String query, String lastEventId) throws Exception {
         sessionStore.put(TEST_SESSION_ID, new BffSession(1L, "sse-test", "idt", "at", "rt",
                 Instant.now().plusSeconds(600)));
         SseClient client = SseClient.connect(port, query,
-                AuthCookies.SESSION_COOKIE_NAME + "=" + TEST_SESSION_ID);
+                AuthCookies.SESSION_COOKIE_NAME + "=" + TEST_SESSION_ID, lastEventId);
         clients.add(client);
         return client;
     }
@@ -103,7 +109,9 @@ class AgentEventsControllerSseTest {
     @Test
     void given_publish_when_subscribed_then_envelope_id_and_workspace_field_on_the_wire()
             throws Exception {
-        SseClient client = connect("");
+        // 通道注册重放后（#56），无过滤新连接会补发缓冲里别测试的帧——以 ?runId=
+        // 锁定本测试的帧（发布仍在其后，断言的是 live 帧线格式）
+        SseClient client = connect("?runId=run-wire");
 
         appService.publish("task-start", Map.of(
                 "runId", "run-wire", "prompt", "写个落地页",
@@ -136,6 +144,39 @@ class AgentEventsControllerSseTest {
         assertThat(client.nextNonCommentLine(1500)).isNull();
     }
 
+    /**
+     * 事故回归上线形态（#53/#56）：建项目后 BA 起跑即死，error 帧（带 projectId）
+     * 发于零订阅——彼时浏览器还在导航/首编译；工作台就绪后以新连接（无
+     * Last-Event-ID）按 ?projectId= 订阅，补发帧必须到达（原事件 id，非重发）。
+     */
+    @Test
+    void given_error_frame_before_connect_when_subscribe_without_last_event_id_then_frame_replayed()
+            throws Exception {
+        appService.publish("error", Map.of(
+                "projectId", "7", "runId", "run-9",
+                "message", "Failed to create model: DEEPSEEK_API_KEY is required"));
+
+        SseClient client = connect("?projectId=7");
+
+        assertThat(client.nextNonCommentLine()).isEqualTo("id:run-9:1");
+        assertThat(client.nextNonCommentLine()).isEqualTo("event:event");
+        JsonNode envelope = objectMapper.readTree(
+                client.nextNonCommentLine().substring("data:".length()));
+        assertThat(envelope.get("type").asText()).isEqualTo("error");
+        assertThat(envelope.get("payload").get("projectId").asText()).isEqualTo("7");
+    }
+
+    /** 重连分野：带 Last-Event-ID = 浏览器自动重连姿态——不补发，维持 REST 重查兜底。 */
+    @Test
+    void given_frames_before_connect_when_subscribe_with_last_event_id_then_no_replay()
+            throws Exception {
+        appService.publish("task-start", Map.of("runId", "run-recon-9", "prompt", "x"));
+
+        SseClient client = connect("", "run-earlier:5");
+
+        assertThat(client.nextNonCommentLine(1500)).isNull();
+    }
+
     @Test
     void given_swagger_group_when_fetch_api_docs_then_description_embeds_roster() {
         String apiDocs = restTemplate.getForObject("/v3/api-docs/agentengine", String.class);
@@ -165,17 +206,20 @@ class AgentEventsControllerSseTest {
             this.readerThread.start();
         }
 
-        static SseClient connect(int port, String query, String cookie) throws Exception {
+        static SseClient connect(int port, String query, String cookie, String lastEventId)
+                throws Exception {
             HttpClient httpClient = HttpClient.newHttpClient();
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder request = HttpRequest.newBuilder()
                     .uri(URI.create("http://localhost:" + port + "/api/agent-events" + query))
                     .header("Accept", MediaType.TEXT_EVENT_STREAM_VALUE)
                     .header("Cookie", cookie)
                     .timeout(Duration.ofSeconds(5))
-                    .GET()
-                    .build();
+                    .GET();
+            if (lastEventId != null) {
+                request.header("Last-Event-ID", lastEventId);
+            }
             HttpResponse<InputStream> response =
-                    httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                    httpClient.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() != 200) {
                 throw new IllegalStateException("SSE 连接失败：HTTP " + response.statusCode());
             }
@@ -255,7 +299,7 @@ class AgentEventsControllerSseTest {
 
         @Bean
         AgentStreamAppService agentStreamAppService(SseChannelHub hub) {
-            return new AgentStreamAppService(hub);
+            return new AgentStreamAppService(hub, new AgentStreamProperties());
         }
 
         @Bean
