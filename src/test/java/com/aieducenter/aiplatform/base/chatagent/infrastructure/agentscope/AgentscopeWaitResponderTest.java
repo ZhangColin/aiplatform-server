@@ -101,6 +101,11 @@ class AgentscopeWaitResponderTest {
         assertThat(result.getToolCall().getId()).isEqualTo("tc-1");
         assertThat(result.getToolCall().getName()).isEqualTo("write_file");
         assertThat(result.getToolCall().getInput()).containsEntry("path", "docs/PRD.md");
+        // #51：重建块的 content 必须回填 input 的 JSON 串——重放校验
+        // （ToolValidator.validateInput）只认 content 原文，null 会炸
+        // 「argument "content" is null」参数校验错误结果给模型（见错重问/自述系统错误）
+        assertThat(result.getToolCall().getContent())
+                .contains("\"path\":\"docs/PRD.md\"");
         // 续跑流的 sink 走 AppService 流桥（workspaceId + 关联字段——再挂起/终态同口径）
         verify(appService).sink("42", Map.of("projectId", "42"));
     }
@@ -146,6 +151,9 @@ class AgentscopeWaitResponderTest {
         assertThat(result.getToolCall().getInput())
                 .containsEntry("question", "用哪个框架?")
                 .containsEntry("answer", "Spring Boot");
+        // #51：content 同步回填（含注入的 answer）——答复重放执行前先过参数校验
+        assertThat(result.getToolCall().getContent())
+                .contains("\"answer\":\"Spring Boot\"");
     }
 
     @Test

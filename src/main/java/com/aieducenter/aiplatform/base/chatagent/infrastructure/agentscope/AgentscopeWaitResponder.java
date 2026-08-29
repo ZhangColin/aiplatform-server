@@ -25,6 +25,10 @@ import com.aieducenter.aiplatform.base.chatagent.infrastructure.agentscope.Agent
 
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.message.ToolUseBlock;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -45,6 +49,7 @@ import lombok.extern.slf4j.Slf4j;
 public class AgentscopeWaitResponder implements WaitResponder {
 
     private static final String ANSWER_DELIMITER = "、";
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final AgentWaitQueryAppService waitQueryService;
     private final AgentscopeChatAgentClient client;
@@ -165,11 +170,25 @@ public class AgentscopeWaitResponder implements WaitResponder {
         return toolCalls;
     }
 
-    /** 重建为 ASKING 态（与会话状态同形——确认应用按此替换，否则原 ASKING 残留卡后续轮）。 */
+    /**
+     * 重建为 ASKING 态（与会话状态同形——确认应用按此替换，否则原 ASKING 残留卡后续轮）。
+     * content 回填 input 的 JSON 串：重放的参数校验（ToolValidator.validateInput）只认
+     * content 原文不认 input map，null 会让重放炸「argument "content" is null」错误结果
+     * 给模型（#51——模型见错换 id 重问/自述提问系统失败）。
+     */
     private static ToolUseBlock askingToolCall(String id, String name,
                                                Map<String, Object> input) {
-        return new ToolUseBlock(id, name, input, null, null,
+        return new ToolUseBlock(id, name, input, toJson(input), null,
                 io.agentscope.core.message.ToolCallState.ASKING);
+    }
+
+    private static String toJson(Map<String, Object> input) {
+        try {
+            return JSON.writeValueAsString(input);
+        }
+        catch (JsonProcessingException e) {
+            throw new IllegalStateException("待确认工具参数序列化失败", e);
+        }
     }
 
     /** 提问批复：答复注入工具 input（ConfirmResult 允许携带修改后的 toolCall）。 */

@@ -132,7 +132,11 @@ class ChatAgentHitlSmokeTest {
 
     // ---------- 内部 ----------
 
-    /** 等待点 body（恢复私货）→ 续跑请求：答复注入工具 input 的 answer 键（答复通道同构）。 */
+    /**
+     * 等待点 body（恢复私货）→ 续跑请求：答复注入工具 input 的 answer 键（答复通道
+     * 同构）。content 回填 input 的 JSON 串——重放参数校验只认 content 原文，null 会
+     * 炸校验错误结果给模型（#51 根因，与 AgentscopeWaitResponder.askingToolCall 同口径）。
+     */
     @SuppressWarnings("unchecked")
     private ChatAgentResume resumeFrom(Map<String, Object> body, AgentEvent wait) {
         List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) body.get("toolCalls");
@@ -143,7 +147,8 @@ class ChatAgentHitlSmokeTest {
                     input.put("answer", ANSWER);
                     return new ConfirmResult(true, new ToolUseBlock(
                             String.valueOf(tc.get("id")), String.valueOf(tc.get("name")),
-                            input, null, null, io.agentscope.core.message.ToolCallState.ASKING));
+                            input, jsonOf(input), null,
+                            io.agentscope.core.message.ToolCallState.ASKING));
                 })
                 .toList();
         return new ChatAgentResume(
@@ -157,6 +162,15 @@ class ChatAgentHitlSmokeTest {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() || "null".equals(value) ? null : value;
+    }
+
+    private String jsonOf(Map<String, Object> input) {
+        try {
+            return objectMapper.writeValueAsString(input);
+        }
+        catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("待确认工具参数序列化失败", e);
+        }
     }
 
     @SuppressWarnings("unchecked")
