@@ -7,6 +7,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -324,6 +326,21 @@ class WorkspaceLifecycleAppServiceTest {
         assertThat(eventRecorder.destroyed().get(0).workspaceId().value()).isEqualTo("105");
         // AFTER_COMMIT：销毁事件送达时记录已删
         assertThat(eventRecorder.workspacesAtDestroyedDelivery()).isEqualTo(0);
+    }
+
+    @Test
+    void given_pending_workspace_when_destroy_then_cancel_inflight_before_cascade() {
+        workspaceRepository.save(Workspace.registerPending(WorkspaceId.of("111"), EnvKind.DEV));
+
+        appService.destroy("111");
+
+        // 置备中销毁（#64）：先取消在途后台置备（防 docker 侧完成后残留），再级联回收 + 删记录
+        InOrder inOrder = inOrder(provisioner, environmentBackend);
+        inOrder.verify(provisioner).cancel(WorkspaceId.of("111"));
+        inOrder.verify(environmentBackend).destroyWorkspace(any(WorkspaceHandle.class));
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM wsp_workspaces WHERE id = 111", Integer.class))
+                .isEqualTo(0);
     }
 
     @Test

@@ -165,12 +165,14 @@ public class WorkspaceLifecycleAppService {
     }
 
     /**
-     * 销毁工作区：物理资源先级联清理（容器→网络→卷，后端尽力而为），记录删除的
-     * 事务内发 WorkspaceDestroyed（AFTER_COMMIT）。物理清理失败不阻断记录删除——
-     * Docker 侧残留以真实状态为准，可重建句柄后重试销毁。
+     * 销毁工作区：先取消在途后台置备（#64，置备中销毁不留孤儿——任务完成
+     * createWorkspace 后见取消即回收刚落定资源），再物理级联清理（容器→网络→卷，
+     * 后端尽力而为），记录删除的事务内发 WorkspaceDestroyed（AFTER_COMMIT）。物理
+     * 清理失败不阻断记录删除——Docker 侧残留以真实状态为准，可重建句柄后重试销毁。
      */
     public void destroy(String workspaceId) {
         Workspace workspace = requireWorkspace(workspaceId);
+        provisioner.cancel(workspace.workspaceId());
         environmentBackend.destroyWorkspace(workspace.toHandle());
         transactionTemplate.executeWithoutResult(status -> {
             workspaceRepository.delete(workspace);

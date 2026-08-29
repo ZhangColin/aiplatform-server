@@ -26,11 +26,13 @@ import com.aieducenter.aiplatform.base.workspace.domain.port.EnvironmentBackend;
 import com.aieducenter.aiplatform.base.workspace.domain.repository.WorkspaceRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -164,6 +166,74 @@ class WorkspaceProvisionAppServiceTest {
             release.countDown();
             provisioner.destroy();
         }
+    }
+
+    @Test
+    void given_pending_workspaces_when_recover_then_each_resubmitted_and_converges() {
+        // 重启收口（#64）：遗留 PROVISIONING 记录逐一续置备，成功收敛 READY（失败走既有
+        // 重试→markFailed，不静默悬置）
+        WorkspaceId a = WorkspaceId.of("301");
+        WorkspaceId b = WorkspaceId.of("302");
+        when(workspaceRepository.findByStatus(ProvisioningStatus.PROVISIONING))
+                .thenReturn(List.of(Workspace.registerPending(a, EnvKind.DEV),
+                        Workspace.registerPending(b, EnvKind.DEV)));
+        when(workspaceRepository.findById(a.id())).thenReturn(Optional.of(Workspace.registerPending(a, EnvKind.DEV)));
+        when(workspaceRepository.findById(b.id())).thenReturn(Optional.of(Workspace.registerPending(b, EnvKind.DEV)));
+        when(environmentBackend.createWorkspace(a, EnvKind.DEV)).thenReturn(devProvision(a));
+        when(environmentBackend.createWorkspace(b, EnvKind.DEV)).thenReturn(devProvision(b));
+
+        provisioner().recoverPendingProvisions();
+
+        verify(environmentBackend).createWorkspace(a, EnvKind.DEV);
+        verify(environmentBackend).createWorkspace(b, EnvKind.DEV);
+        ArgumentCaptor<Workspace> saved = ArgumentCaptor.forClass(Workspace.class);
+        verify(workspaceRepository, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues()).extracting(Workspace::getStatus)
+                .containsOnly(ProvisioningStatus.READY);
+    }
+
+    @Test
+    void given_provision_in_flight_when_cancel_then_cleans_up_and_not_ready() throws Exception {
+        // 置备中销毁（#64）：在途 createWorkspace 落定前取消 → 任务回收刚落定资源、
+        // 不回填 READY、不落库（记录由销毁方删除），无孤儿容器/网络/卷
+        WorkspaceId id = WorkspaceId.of("42");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(environmentBackend.createWorkspace(id, EnvKind.DEV)).thenAnswer(inv -> {
+            entered.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return devProvision(id);
+        });
+
+        WorkspaceProvisionAppService provisioner = new WorkspaceProvisionAppService(
+                environmentBackend, workspaceRepository, new WorkspaceProperties());
+        try {
+            provisioner.provision(id, EnvKind.DEV);
+            assertThat(entered.await(5, TimeUnit.SECONDS))
+                    .as("置备任务已进入 createWorkspace")
+                    .isTrue();
+
+            // 取消在后台线程（首句置取消标志后等待完成），主线程随后放行置备——
+            // 保证任务在 createWorkspace 返回时已见取消标志
+            Thread canceller = new Thread(() -> provisioner.cancel(id), "test-canceller");
+            canceller.start();
+            Thread.sleep(300);
+            release.countDown();
+            canceller.join(5000);
+
+            verify(workspaceRepository, never()).save(any());
+            verify(environmentBackend).destroyWorkspace(any(WorkspaceHandle.class));
+        } finally {
+            release.countDown();
+            provisioner.destroy();
+        }
+    }
+
+    @Test
+    void given_no_inflight_when_cancel_then_noop() {
+        assertThatCode(() -> provisioner().cancel(WorkspaceId.of("42")))
+                .doesNotThrowAnyException();
+        verifyNoInteractions(environmentBackend);
     }
 
     // ---------- 测试数据 ----------
