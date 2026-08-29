@@ -37,7 +37,10 @@ import com.aieducenter.aiplatform.base.agentengine.domain.enums.WaitStatus;
  *
  * <p>生命周期（单向，只能从 PENDING 迁出一次）：{@link #settle}（人已答复，
  * 结果落 settle_outcome）/ {@link #expire}（run 终态联动，A1 §1.3）/
- * {@link #cancel}（复用会话下发前清理残留）。不软删除：终态行即历史。</p>
+ * {@link #cancel}（复用会话下发前清理残留）。不软删除：终态行即历史。不变量
+ * 由持久层守卫 UPDATE 强制（票 #37）：联动/清理迁移带 {@code WHERE status=PENDING}
+ * 条件（{@code AgentWaitRepository#transitionIfStatus}），与 settle 落库交错时
+ * 后写不得胜出——本类的 {@code requirePending} 只是内存前置，不是竞争防线。</p>
  */
 @Entity
 @Table(name = "agt_pending_waits")

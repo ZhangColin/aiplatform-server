@@ -130,9 +130,12 @@ class AgentWaitPersistenceTest {
                 "run-c3", WaitKind.QUESTION, "que_c3", null, null,
                 RAISED_AT.plusSeconds(90)));
 
+        // 本地库可能有他途 PENDING 残留（冒烟/BA 运行），只断言本测试两行的
+        // 相对序与终态隔离——「新者在前」语义不变，不受环境数据影响
         assertThat(waitRepository.findByStatusOrderByRaisedAtDesc(WaitStatus.PENDING))
                 .extracting(AgentWait::getWaitId)
-                .containsExactly(fresh.getWaitId(), older.getWaitId()); // 新者在前，终态不混入
+                .containsSubsequence(fresh.getWaitId(), older.getWaitId()) // 新者在前
+                .doesNotContain(settled.getWaitId()); // 终态不混入
     }
 
     @Test

@@ -407,13 +407,16 @@ class AgentWaitAppServiceTest {
         AgentWait wait = raisedQuestion();
         when(waitRepository.findByRunIdAndStatus("run-1", WaitStatus.PENDING))
                 .thenReturn(List.of(wait));
+        when(waitRepository.transitionIfStatus(wait.getWaitId(), WaitStatus.PENDING,
+                WaitStatus.EXPIRED, NOW)).thenReturn(1);
 
         int closed = appService.expireRun("run-1");
 
         assertThat(closed).isEqualTo(1);
         assertThat(wait.getStatus()).isEqualTo(WaitStatus.EXPIRED);
         assertThat(wait.getSettleOutcome()).isNull();
-        verify(waitRepository).save(wait);
+        verify(waitRepository).transitionIfStatus(wait.getWaitId(), WaitStatus.PENDING,
+                WaitStatus.EXPIRED, NOW);
     }
 
     @Test
@@ -422,7 +425,8 @@ class AgentWaitAppServiceTest {
                 .thenReturn(List.of());
 
         assertThat(appService.expireRun("run-x")).isZero();
-        verify(waitRepository, never()).save(any());
+        verify(waitRepository, never()).transitionIfStatus(anyString(), any(),
+                any(), any());
     }
 
     @Test
@@ -431,6 +435,8 @@ class AgentWaitAppServiceTest {
         AgentWait wait = raisedQuestion();
         when(waitRepository.findByRunIdAndStatus("run-1", WaitStatus.PENDING))
                 .thenReturn(List.of(wait));
+        when(waitRepository.transitionIfStatus(wait.getWaitId(), WaitStatus.PENDING,
+                WaitStatus.EXPIRED, NOW)).thenReturn(1);
 
         List<WaitPointResponse> closed = appService.expireRunReturning("run-1");
 
@@ -440,10 +446,27 @@ class AgentWaitAppServiceTest {
     }
 
     @Test
+    void given_guard_missed_row_when_expireRun_then_skipped_and_not_reported() {
+        // 票 #37：联动快照后行已被 settle 迁出（守卫 UPDATE 命中 0）——静默跳过、
+        // 不计入收口回报（wait-settled 帧不发给已被答复的行）
+        AgentWait wait = raisedQuestion();
+        when(waitRepository.findByRunIdAndStatus("run-1", WaitStatus.PENDING))
+                .thenReturn(List.of(wait));
+        when(waitRepository.transitionIfStatus(wait.getWaitId(), WaitStatus.PENDING,
+                WaitStatus.EXPIRED, NOW)).thenReturn(0);
+
+        assertThat(appService.expireRunReturning("run-1")).isEmpty();
+        assertThat(wait.getStatus()).isEqualTo(WaitStatus.PENDING); // 内存实体不动
+        verify(waitRepository, never()).save(any());
+    }
+
+    @Test
     void given_session_reuse_when_cancelSessionWaits_then_pending_cancelled() {
         AgentWait wait = raisedQuestion();
         when(waitRepository.findBySessionIdAndStatus("ses_1", WaitStatus.PENDING))
                 .thenReturn(List.of(wait));
+        when(waitRepository.transitionIfStatus(wait.getWaitId(), WaitStatus.PENDING,
+                WaitStatus.CANCELLED, NOW)).thenReturn(1);
 
         int cancelled = appService.cancelSessionWaits("ses_1");
 

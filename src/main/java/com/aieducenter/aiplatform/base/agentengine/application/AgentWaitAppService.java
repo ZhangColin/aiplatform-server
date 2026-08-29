@@ -2,6 +2,7 @@ package com.aieducenter.aiplatform.base.agentengine.application;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -237,7 +238,8 @@ public class AgentWaitAppService {
 
     /**
      * run 终态联动（finish/error/timeout/cancel）：其 PENDING 等待点全部 EXPIRED
-     * （「工具超时/崩溃留 ASKING 死状态」对策）。返回联动行数（0 = 无事发生）。
+     * （「工具超时/崩溃留 ASKING 死状态」对策）。守卫迁移（票 #37）：与 settle 落库
+     * 交错时行已被迁出即跳过——返回<b>实际联动行数</b>（0 = 无事发生）。
      */
     @Transactional
     public int expireRun(String runId) {
@@ -246,23 +248,24 @@ public class AgentWaitAppService {
 
     /**
      * run 终止联动收口并回报收口行（票 #38：cancelRun / deny cap 平台终止共用）——
-     * PENDING 全部 EXPIRED 后返回行投影（wait-settled 帧发射用）。空表 = 无事发生。
+     * PENDING 守卫迁移 EXPIRED 后返回<b>实际迁移行</b>投影（wait-settled 帧发射用，
+     * 已被 settle 的行不混入）。空表 = 无事发生。
      */
     @Transactional
     public List<WaitPointResponse> expireRunReturning(String runId) {
-        List<AgentWait> pending = waitRepository.findByRunIdAndStatus(runId, WaitStatus.PENDING);
-        closeAll(pending, WaitStatus.EXPIRED, "run 终止联动");
-        return pending.stream().map(WaitPointResponse::from).toList();
+        return closeAll(waitRepository.findByRunIdAndStatus(runId, WaitStatus.PENDING),
+                WaitStatus.EXPIRED, "run 终止联动").stream().map(WaitPointResponse::from)
+                .toList();
     }
 
     /**
      * 复用会话下发前的残留清理（「有则先清理再跑」）：会话名下 PENDING 全部
-     * CANCELLED。返回清理行数。
+     * CANCELLED。守卫迁移（票 #37）：返回<b>实际清理行数</b>（被别途迁出的行跳过）。
      */
     @Transactional
     public int cancelSessionWaits(String sessionId) {
         return closeAll(waitRepository.findBySessionIdAndStatus(sessionId, WaitStatus.PENDING),
-                WaitStatus.CANCELLED, "复用会话清理");
+                WaitStatus.CANCELLED, "复用会话清理").size();
     }
 
     // ---------- 内部 ----------
@@ -340,21 +343,35 @@ public class AgentWaitAppService {
                 sessionId, engineRef, WaitStatus.PENDING);
     }
 
-    private int closeAll(List<AgentWait> waits, WaitStatus target, String cause) {
+    /**
+     * 守卫迁移快照行（票 #37 竞态根治）：候选来自联动前的 PENDING 快照，逐行经
+     * {@link AgentWaitRepository#transitionIfStatus}（守卫在 SQL WHERE 上——
+     * 「只能从 PENDING 迁出一次」由库层强制，不再依赖内存态判断）。命中 0 =
+     * 行已被 settle 等别途迁出，静默跳过——后写不得胜出。命中行在内存实体上呈现
+     * 终态（{@link AgentWait#expire}/{@link AgentWait#cancel} 行为方法保留，供
+     * 返回投影呈现；持久化已由守卫 UPDATE 完成，不经实体 save）。
+     */
+    private List<AgentWait> closeAll(List<AgentWait> snapshot, WaitStatus target,
+                                     String cause) {
         Instant now = clock.instant();
-        for (AgentWait wait : waits) {
+        List<AgentWait> migrated = new ArrayList<>(snapshot.size());
+        for (AgentWait wait : snapshot) {
+            if (waitRepository.transitionIfStatus(wait.getWaitId(), WaitStatus.PENDING,
+                    target, now) == 0) {
+                continue;
+            }
             if (target == WaitStatus.EXPIRED) {
                 wait.expire(now);
             } else {
                 wait.cancel(now);
             }
-            waitRepository.save(wait);
+            migrated.add(wait);
         }
-        if (!waits.isEmpty()) {
-            log.info("[agentengine] {}：{} 行等待点 → {}（首行 run={}）", cause, waits.size(),
-                    target, waits.get(0).getRunId());
+        if (!migrated.isEmpty()) {
+            log.info("[agentengine] {}：{} 行等待点 → {}（首行 run={}）", cause, migrated.size(),
+                    target, migrated.get(0).getRunId());
         }
-        return waits.size();
+        return migrated;
     }
 
     private ApplicationException engineRequestFailed(RuntimeException e) {
